@@ -1,3 +1,5 @@
+import type { ViewRef } from "nsh";
+
 /** Commands whose native surface is still supplied by a focused chat. */
 export const DEFERRED_COMMANDS = new Set([
   "interruptChat",
@@ -93,4 +95,16 @@ export const PANEL_COMMANDS: Readonly<Record<string, string>> = {
 export function commandAllowed(command: string, modalOpen: boolean, dismissStrip: () => void): boolean {
   dismissStrip();
   return !modalOpen && !DEFERRED_COMMANDS.has(command);
+}
+
+/** Whether `focusView` moves the keyboard focus. NSH 0.3 moved it from a ref only to a text
+ * input: on a button, a row or a pane `ref.focus()` did nothing, and the app has run that way
+ * (`schedules/Parity.test.tsx` pins it). Since NSH 0.4 the same call focuses any view Tab stops
+ * at, and a focused view that takes presses then gets Return and Space before the keymap does.
+ * Off keeps what 0.3 did; turning it on is a change to check call site by call site. */
+const FOCUSES_VIEWS: boolean = false;
+
+/** Asks for the keyboard focus on a view that is not a text input (see `FOCUSES_VIEWS`). */
+export function focusView(node: ViewRef | null | undefined): void {
+  if (FOCUSES_VIEWS) node?.focus();
 }

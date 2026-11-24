@@ -136,7 +136,7 @@ export function HostDashboardPage(props: {
         <View role="header" accessibilityLabel="Dashboard" style={{ height: ui.bar() - 1, flexDirection: "row", alignItems: "center", gap: pt(6), paddingHorizontal: pt(12),
           backgroundColor: palette().bg, borderRightWidth: 1, borderColor: palette().divider }}>
           <Icon name="globe" size={pt(15)} color={palette().text} />
-          <Text numberOfLines={1} style={{ ...text(13), fontWeight: "500" }}>Dashboard</Text>
+          <Text style={{ ...text(13), fontWeight: "500", numberOfLines: 1 }}>Dashboard</Text>
         </View>
       </TopRow>
       {notes() && <View style={{ paddingHorizontal: pt(16), paddingVertical: pt(8), gap: pt(8), backgroundColor: palette().bg }}>

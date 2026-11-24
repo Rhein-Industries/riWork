@@ -1,55 +1,38 @@
 //! The app's keyboard shortcuts (`nsh/keymap`): the table the engine
-//! mounts ([`MountItem::Keymap`](nsh_core::MountItem::Keymap)) and a local
-//! key monitor that matches every key against it on the spot.
+//! mounts ([`MountItem::Keymap`](nsh_core::MountItem::Keymap)) and the
+//! match of every key against it on the spot.
 //!
-//! The monitor sees a key before AppKit dispatches it: before menus' key
-//! equivalents (which is why the keystrokes of Quit, Hide, Minimize and
-//! Full Screen cannot be bound: `Keystroke::reserved`; the dev host's
-//! Cmd+R is left alone), before the field
-//! editor's key bindings and before the root's own keys (going back,
-//! scrolling). A key that fires a binding is consumed (no beep, nothing
-//! typed) and reported to JS with the root's `KeyCommand` event; JS runs
-//! the handler afterwards. Other keys go on as if there were no monitor.
+//! The key is seen before AppKit dispatches it by [`crate::keyboard`]'s
+//! monitor, which runs this match first: before menus' key equivalents
+//! (which is why the keystrokes of Quit, Hide, Minimize and Full Screen
+//! cannot be bound: `Keystroke::reserved`; the dev host's Cmd+R is left
+//! alone), before the field editor's key bindings and before the root's
+//! own keys (going back, scrolling). A key that fires a binding is
+//! consumed (no beep, nothing typed) and reported to JS with the root's
+//! `KeyCommand` event; JS runs the handler afterwards. Other keys go on as
+//! if there were no table.
 //!
 //! A surface takes the keys of its window while the keyboard focus is in
 //! it (its root, one of its views, a field or hosted view inside it), or
 //! nowhere (the window itself).
 
-use std::{cell::RefCell, ptr::NonNull, rc::Rc, sync::Arc};
+use std::{cell::RefCell, rc::Rc, sync::Arc};
 
-use block2::RcBlock;
 use nsh_core::{
     EventKind, EventPayload, PayloadValue, ROOT_ID,
-    keymap::{Key, KeyMatch, Keymap, Keystroke, Modifiers},
+    keymap::{Key, Keymap, Keystroke, Modifiers},
     platform::Os,
 };
-use objc2::{rc::Retained, runtime::AnyObject};
-use objc2_app_kit::{NSEvent, NSEventMask, NSEventModifierFlags, NSView, NSWindow};
+use objc2::{ProtocolType, msg_send};
+use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSTextInputClient, NSView, NSWindow};
+use objc2_foundation::NSObjectProtocol;
 
 use crate::surface::Surface;
 
-/// A surface's table and the monitor matching keys against it (while it
-/// has bindings).
+/// A surface's table of bindings.
 #[derive(Default)]
 pub(crate) struct KeymapState {
     table: RefCell<Option<Arc<Keymap>>>,
-    monitor: RefCell<Option<Retained<AnyObject>>>,
-}
-
-impl KeymapState {
-    fn remove_monitor(&self) {
-        if let Some(monitor) = self.monitor.borrow_mut().take() {
-            // SAFETY: a monitor `addLocalMonitorForEventsMatchingMask`
-            // returned.
-            unsafe { NSEvent::removeMonitor(&monitor) };
-        }
-    }
-}
-
-impl Drop for KeymapState {
-    fn drop(&mut self) {
-        self.remove_monitor();
-    }
 }
 
 /// `MountItem::Keymap`: replaces the surface's table.
@@ -60,50 +43,56 @@ pub(crate) fn set(surface: &Surface, keymap: Arc<Keymap>) {
         return;
     }
     *state.table.borrow_mut() = Some(keymap);
-    if state.monitor.borrow().is_none() {
-        let monitor = install(surface.key());
-        *state.monitor.borrow_mut() = monitor;
-    }
 }
 
 /// Drops the table (the app stopped).
 pub(crate) fn clear(surface: &Surface) {
     surface.keymap.table.borrow_mut().take();
-    surface.keymap.remove_monitor();
 }
 
-fn install(key: u64) -> Option<Retained<AnyObject>> {
-    let block = RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
-        // SAFETY: AppKit passes a valid event.
-        let e = unsafe { event.as_ref() };
-        match Surface::with_key(key) {
-            Some(surface) if pressed(&surface, e) => std::ptr::null_mut(),
-            _ => event.as_ptr(),
-        }
-    });
-    // SAFETY: the block returns the event it got, or null (consumed); the
-    // monitor is removed with the table.
-    unsafe { NSEvent::addLocalMonitorForEventsMatchingMask_handler(NSEventMask::KeyDown, &block) }
+/// What the monitor does with key-down `event`, for a key given to a
+/// window that is not the key window (`nsh test`'s, whose events the
+/// application's monitors do not see because the window is handed them
+/// directly): whether a binding consumed it (then the window must not get
+/// it; a binding passing it through is reported and the window gets it).
+#[cfg(feature = "dev")]
+pub(crate) fn fires(surface: &Rc<Surface>, event: &NSEvent) -> bool {
+    pressed(surface, event)
 }
 
-/// Whether key-down `event` fired one of the surface's bindings (then it
-/// is reported to JS and consumed).
-fn pressed(surface: &Rc<Surface>, event: &NSEvent) -> bool {
+/// Whether key-down `event` is consumed by one of the surface's bindings.
+/// A binding it fires is reported to JS, one passing the key through
+/// ([`nsh_core::keymap::KeyMatch::Notify`]) without consuming it. Runs in
+/// [`crate::keyboard`]'s monitor, before the raw key and the menus.
+pub(crate) fn pressed(surface: &Rc<Surface>, event: &NSEvent) -> bool {
     let Some(table) = surface.keymap.table.borrow().clone() else {
         return false;
     };
-    let Some(window) = surface.root.ns().window() else {
+    // The monitor sees the key before any view: the window it is in (the
+    // main one or a window of the app's own) is the one picked in.
+    let Some(window) = event.window(surface.mtm) else {
         return false;
     };
-    if event.window(surface.mtm).as_deref() != Some(&*window) {
+    let Some(root) = crate::window::root_in(surface, &window) else {
+        return false;
+    };
+    // Before a binding acts: the focus it moves shows (`focus-visible:`).
+    surface.control(|c| c.set_input_modality(nsh_core::platform::InputModality::Keyboard));
+    let own = root.ns() != surface.root.ns();
+    let window_root = root.id();
+    if crate::window::blocked(surface, own.then_some(&root)) {
         return false;
     }
+    crate::input::enter(surface, own.then_some(root));
     let Some(editing) = editing(surface, &window) else {
         return false;
     };
-    if crate::input::control_activation_target(surface, event).is_some() {
+    if composing(&window) {
         return false;
     }
+    // Return and Space on a focused control fire only the focus' own
+    // bindings; else the control takes them (`input::key`).
+    let control = crate::input::control_activation_target(surface, event).is_some();
     let Some(keystroke) = keystroke(event) else {
         return false;
     };
@@ -111,8 +100,15 @@ fn pressed(surface: &Rc<Surface>, event: &NSEvent) -> bool {
     if cfg!(feature = "dev") && keystroke.reloads(Os::MacOs) {
         return false;
     }
-    let found = table.find(keystroke, editing, event.isARepeat());
-    if let KeyMatch::Fire(id) = found {
+    // Only the bindings of the window the key is in (and JS's) take it.
+    // A focus a dialog covers has no keys of its own: the dialog's take
+    // them.
+    let mut focus = nsh_core::keymap::KeyFocus::default();
+    focus.editing = editing;
+    focus.control = control;
+    focus.covered = crate::input::focus_covered(surface);
+    let found = table.find_with(window_root, keystroke, focus, event.isARepeat());
+    if let Some(id) = found.fired() {
         surface.event(
             ROOT_ID,
             EventKind::KeyCommand,
@@ -120,6 +116,26 @@ fn pressed(surface: &Rc<Surface>, event: &NSEvent) -> bool {
         );
     }
     found.consumed()
+}
+
+/// Whether an input method is composing in the focused input client (it has
+/// marked text: pinyin, kana). Every key is then the input method's:
+/// Backspace deletes a letter of the composition, Return and Space
+/// commit it, arrows move through its candidates. A binding taking one
+/// first would leave the composition stuck.
+fn composing(window: &NSWindow) -> bool {
+    window.firstResponder().is_some_and(|responder| {
+        // Hosted inputs can implement the text input protocol without
+        // inheriting from NSTextView (a terminal, for example).
+        if !responder.conformsToProtocol(
+            <dyn NSTextInputClient>::protocol().expect("AppKit's text input protocol"),
+        ) {
+            return false;
+        }
+        // SAFETY: The responder conforms to NSTextInputClient, whose required
+        // hasMarkedText method is called on the main thread.
+        unsafe { msg_send![&*responder, hasMarkedText] }
+    })
 }
 
 /// Where the keyboard focus is: `Some(true)` in a text input or hosted
@@ -133,15 +149,17 @@ fn editing(surface: &Surface, window: &NSWindow) -> Option<bool> {
     let Some(view) = responder.downcast_ref::<NSView>() else {
         return Some(false);
     };
-    let root = surface.root.ns();
+    let root = crate::input::event_root(surface);
+    let root = root.ns();
     if !view.isDescendantOf(root) {
         return None;
     }
     Some(!crate::view::is_ours(view))
 }
 
-/// The keystroke of `event`, by its key on the US layout.
-fn keystroke(event: &NSEvent) -> Option<Keystroke> {
+/// The keystroke of `event`, by its key on the US layout: the shortcut
+/// vocabulary [`crate::keyboard`] matches capture rules with too.
+pub(crate) fn keystroke(event: &NSEvent) -> Option<Keystroke> {
     let flags = event.modifierFlags();
     let modifiers = Modifiers {
         ctrl: flags.contains(NSEventModifierFlags::Control),
@@ -176,6 +194,12 @@ fn keystroke(event: &NSEvent) -> Option<Keystroke> {
     Some(Keystroke { modifiers, key })
 }
 
+/// Whether `event` is the dev host's reload (Cmd+R): the raw keys leave it
+/// to the reload monitor, as the keymap does.
+pub(crate) fn reloads(event: &NSEvent) -> bool {
+    keystroke(event).is_some_and(|keystroke| keystroke.reloads(Os::MacOs))
+}
+
 /// The character `event`'s key types without modifiers (Shift included:
 /// Shift+/ is `shift+/`), in lower case; on a layout that types no ASCII
 /// there, the US layout's character of the key, as menus match it.
@@ -191,12 +215,22 @@ fn character(event: &NSEvent, shift: bool) -> Option<char> {
     }
 }
 
+/// The virtual key codes of F1 to F20.
+const FUNCTION_KEYS: [u16; 20] = [
+    122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111, 105, 107, 113, 106, 64, 79, 80, 90,
+];
+
 /// F1 to F20, by virtual key code.
-fn function_key(code: u16) -> Option<u8> {
-    const KEYS: [u16; 20] = [
-        122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111, 105, 107, 113, 106, 64, 79, 80, 90,
-    ];
-    KEYS.iter().position(|&k| k == code).map(|i| i as u8 + 1)
+pub(crate) fn function_key(code: u16) -> Option<u8> {
+    FUNCTION_KEYS
+        .iter()
+        .position(|&k| k == code)
+        .map(|i| i as u8 + 1)
+}
+
+/// The virtual key code of F`n` (macOS's keyboards end at F20).
+pub(crate) fn function_key_code(n: u8) -> Option<u16> {
+    FUNCTION_KEYS.get(usize::from(n).checked_sub(1)?).copied()
 }
 
 #[cfg(test)]
@@ -207,5 +241,9 @@ mod tests {
         assert_eq!(super::function_key(96), Some(5));
         assert_eq!(super::function_key(90), Some(20));
         assert_eq!(super::function_key(0), None);
+        assert_eq!(super::function_key_code(1), Some(122));
+        assert_eq!(super::function_key_code(20), Some(90));
+        assert_eq!(super::function_key_code(0), None);
+        assert_eq!(super::function_key_code(21), None);
     }
 }

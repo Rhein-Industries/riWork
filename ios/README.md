@@ -168,12 +168,34 @@ progress is cancelled the moment the setting turns off. On, dictation works as d
 Open `ios/RiWorkRemote.xcodeproj` in Xcode 26, select `RiWorkRemote`, and choose an
 iPhone or iPad. The deployment target is iOS 18.0. Select your development team
 in Signing & Capabilities for a physical device. The `nsh` branch requires the
-NSH 0.3.0 distribution, including `embed/ios/NativeShell.xcframework`; no AI
-service keys are needed. Prepare its runtime and mobile bundle before
-regenerating the checked-in project from `project.yml`:
+NSH 0.6.1 CLI and the NSH 0.6.1 iOS embedding SDK (`NativeShell.xcframework`); no AI
+service keys are needed.
+
+Since NSH 0.5 the CLI archive no longer contains the embedding SDK. It is a separate
+asset of the same release, `nsh-embed-ios.zip`, with a `.sha256` beside it. Download
+both once, check the archive, and put its `NativeShell.xcframework` beside the CLI's
+`bin` as `embed/ios/NativeShell.xcframework`, where `prepare-nsh.py` looks for it:
 
 ```sh
-export NSH_CLI=/absolute/path/to/nsh-0.3.0/bin/nsh
+nsh_home=/absolute/path/to/nsh-0.6.1        # the folder that holds bin/nsh
+cd "$(mktemp -d)"
+curl -fLO https://github.com/longbridge/nsh/releases/download/v0.6.1/nsh-embed-ios.zip
+curl -fLO https://github.com/longbridge/nsh/releases/download/v0.6.1/nsh-embed-ios.zip.sha256
+shasum -a 256 -c nsh-embed-ios.zip.sha256
+unzip -q nsh-embed-ios.zip 'nsh-embed-ios/NativeShell.xcframework/*'
+mkdir -p "$nsh_home/embed/ios"
+mv nsh-embed-ios/NativeShell.xcframework "$nsh_home/embed/ios/"
+```
+
+The archive also holds `NativeShellDev.xcframework`, the runtime that loads from a dev
+server; the app does not link it. `nsh component add ios` installs something else (the
+runtimes of `nsh run --target ios` and `nsh package --target ios`) and is not needed here.
+
+Prepare the runtime and mobile bundle before regenerating the checked-in project from
+`project.yml`:
+
+```sh
+export NSH_CLI=/absolute/path/to/nsh-0.6.1/bin/nsh
 /usr/bin/python3 ios/scripts/prepare-nsh.py
 cd ios
 xcodegen generate
@@ -189,12 +211,16 @@ Use a specific simulator UDID when several are running. Keep ad-hoc simulator
 signing enabled. `CODE_SIGNING_ALLOWED=NO` compiles but cannot use Keychain (-34018).
 The pinned SDK supports physical arm64 devices and Apple-silicon simulators.
 Xcode rebuilds the mobile bundle before compiling the app, using the verified
-CLI path recorded locally by `prepare-nsh.py`. `NSH_IOS_SDK` can point to the
-matching framework when it is outside the CLI distribution. `ios/Vendor`,
+CLI path recorded locally by `prepare-nsh.py`, which refuses a CLI or a framework
+of any other version. `NSH_IOS_SDK` can point to the 0.6.1 `NativeShell.xcframework`
+when it is kept somewhere other than beside the CLI. `ios/Vendor`,
 `ios/Generated`, and the remembered CLI path are generated and ignored by Git.
 `xcodegen generate` also derives `RiWorkRemote/Info-Debug.plist` (`Info.plist` plus the
 Debug-only local-networking ATS exception, via `postGenCommand`); commit both plists.
 Release builds keep default App Transport Security and hide the local-relay switch.
+The NSH 0.5 runtime writes its warnings, and anything the pages print with `console`, to
+the unified log under the app's bundle identifier:
+`xcrun simctl spawn <udid> log stream --predicate 'subsystem == "com.riwork.remote"'`.
 
 ## Pair and connect
 

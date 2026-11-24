@@ -1,4 +1,4 @@
-import { Scroll, Text, View, cleanup, effect, signal, type YNode } from "nsh";
+import { Scroll, Text, View, cleanup, effect, signal, type ViewRef } from "nsh";
 import { Button, Input } from "nsh/base";
 import { Accounts, Chat, Handoff as HandoffBridge, type AccountsDto } from "riwork/native";
 import { space, type InterfaceTheme } from "./appearance";
@@ -52,7 +52,7 @@ export function Handoff(props: HandoffProps) {
   const models = signal<{ provider: string; model?: string }[]>([]);
   const pending = signal(false), error = signal("");
   let alive = true, submitted = false;
-  let modelInput: YNode | undefined, focused = false;
+  let modelInput: ViewRef | undefined, focused = false;
   cleanup(() => { alive = false; });
   effect(() => { if (!focused && (props.visible?.() ?? true) && source() && modelInput) { focused = true; modelInput.focus(); } });
   const theme = props.theme;
@@ -112,7 +112,7 @@ export function Handoff(props: HandoffProps) {
   return <Scroll testID="handoff-setup" style={{ flex: 1, minHeight: 0, backgroundColor: theme().palette.bg }} contentStyle={{ alignItems: "center", padding: size(20) }}>
     <View style={{ width: "100%", maxWidth: size(600), gap: size(10) }}>
     <View style={{ flexDirection: "row", alignItems: "center", gap: size(8) }}><Icon name="chat" size={17 * theme().scale} color={theme().palette.muted} /><Text role="header" style={{ ...text(17), fontWeight: "600" }}>Hand off conversation</Text></View>
-    <Text numberOfLines={2} style={text(11, true)}>{source()?.label ?? (error() ? "Source unavailable" : "Reading the conversation's source…")}</Text>
+    <Text style={{ ...text(11, true), numberOfLines: 2 }}>{source()?.label ?? (error() ? "Source unavailable" : "Reading the conversation's source…")}</Text>
       {source() && <>
         {heading("Destination")}
         <View role="radiogroup" accessibilityLabel="Destination" style={group()}>
@@ -122,9 +122,9 @@ export function Handoff(props: HandoffProps) {
         {heading("Agent")}
         <View role="radiogroup" accessibilityLabel="Agent" style={group()}>{providers().map((value) => choice(`handoff-provider-${value}`, LABELS[value], provider() === value, () => chooseProvider(value)))}</View>
         {heading("Model")}
-        <Input testID="handoff-model" ref={(node) => { modelInput = node; }} accessibilityLabel="Model" placeholder="The agent's own default" value={model()} onChange={(value) => model.set(value)} disabled={pending()} style={field()} />
+        <Input testID="handoff-model" ref={(node) => { modelInput = node; }} accessibilityLabel="Model" placeholder="The agent's own default" value={model()} onChange={({ value }) => model.set(value)} disabled={pending()} style={field()} />
         {!!suggestions().length && <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4 }}>{suggestions().map((value) => choice(`handoff-model-${value}`, value, model().trim() === value, () => model.set(value)))}</View>}
-        <Input testID="handoff-effort" accessibilityLabel="Reasoning effort" placeholder="Reasoning effort (optional)" value={effort()} onChange={(value) => effort.set(value)} disabled={pending()} style={field()} />
+        <Input testID="handoff-effort" accessibilityLabel="Reasoning effort" placeholder="Reasoning effort (optional)" value={effort()} onChange={({ value }) => effort.set(value)} disabled={pending()} style={field()} />
         {provider() === "codex" && <>
           {heading("Codex account")}
           <View role="radiogroup" accessibilityLabel="Codex account" style={group()}>
@@ -144,8 +144,8 @@ export function Handoff(props: HandoffProps) {
           <Text style={text(10, true)}>{context() === "summary" ? "Asks the source agent to write a summary. You can leave this tab while it works, or answer the agent in its own tab; the transcript is used if a summary is unavailable." : "Passes the recorded conversation. The source session stays as it is."}</Text>
         </>}
         {heading("Note")}
-        <Input testID="handoff-note" accessibilityLabel="Note for the new agent" placeholder="Anything the new agent should know" multiline={true} autoCorrect={false} value={note()} onChange={(value) => note.set(value)} disabled={pending()} style={{ ...field(), minHeight: size(56), maxHeight: size(120) }} />
-        <Text selectable={true} numberOfLines={2} style={{ ...text(10, true), fontFamily: theme().monoFamily }}>{`Same project, worktree and directory · ${source()!.cwd}`}</Text>
+        <Input testID="handoff-note" accessibilityLabel="Note for the new agent" placeholder="Anything the new agent should know" multiline={true} autoCorrect={false} value={note()} onChange={({ value }) => note.set(value)} disabled={pending()} style={{ ...field(), minHeight: size(56), maxHeight: size(120) }} />
+        <Text style={{ ...text(10, true), fontFamily: theme().monoFamily, userSelect: "text", numberOfLines: 2 }}>{`Same project, worktree and directory · ${source()!.cwd}`}</Text>
       </>}
       {pending() && <Text role="text" style={{ ...text(), color: theme().palette.gold }}>{context() === "summary" ? "Asking for a summary and preparing the new session…" : "Reading the conversation and preparing the new session…"}</Text>}
       {!!error() && <Text role="alert" style={{ ...text(), color: theme().palette.gold }}>{error()}</Text>}

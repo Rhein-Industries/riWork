@@ -1,10 +1,10 @@
 /** Minimal reproducer for PANEL-113's pinned NSH API blocker. No native API,
  * store, provider, socket, clipboard, GUI, timer or application action. */
-import { Text, View, host, mount, type YNode } from "nsh";
+import { Text, View, host, mount, type ViewRef } from "nsh";
 import { Button, Input, Radio } from "nsh/base";
 
 function Fixture() {
-  const controls = new Map<string, YNode>();
+  const controls = new Map<string, ViewRef>();
   host.on("app.fixture.schedules.focus", (name) => controls.get(String(name))?.focus());
   return <View style={{ flex: 1, padding: 20, gap: 10 }}>
     <Input testID="capability-input" placeholder="Focus starts here" />

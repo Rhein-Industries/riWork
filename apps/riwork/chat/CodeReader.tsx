@@ -1,7 +1,8 @@
-import { Clipboard, Text, View, cleanup, host, signal, type YNode } from "nsh";
+import { Clipboard, Text, View, cleanup, host, signal, type ViewRef } from "nsh";
 import { Editor, type EditorRef } from "nsh/base";
 import { space, type InterfaceTheme } from "../appearance";
 import { utf8Bytes } from "../files_model";
+import { focusView } from "../keyboard";
 import { SideHeader, escapeWithin, type FocusWithin } from "./SidePanel";
 
 export const MAX_SNIPPET = 256 * 1024;
@@ -70,7 +71,7 @@ export function CodeReader(props: {
   }
   // The label and the disabled state are read in place, so a save keeps the
   // button (and its focus); `key` reports the focus whatever the label says.
-  const button = (key: string, label: () => string, onPress: () => void, disabled: () => boolean = () => false, color = palette().text, ref?: (node: YNode) => void) =>
+  const button = (key: string, label: () => string, onPress: () => void, disabled: () => boolean = () => false, color = palette().text, ref?: (node: ViewRef) => void) =>
     <View role="button" ref={(node) => ref?.(node)} focusable={!disabled()} accessibilityLabel={label()} accessibilityState={{ disabled: disabled() }}
       onPress={() => { if (!disabled()) onPress(); }} {...props.focus.track(key)} style={{ ...action(), opacity: disabled() ? 0.4 : 1 }}
       hoverStyle={{ backgroundColor: palette().panelActive }} focusStyle={{ borderColor: palette().cyan }}>
@@ -81,17 +82,17 @@ export function CodeReader(props: {
       focus={props.focus} onClose={() => close()} disabled={busy} />
     <View style={{ flex: 1, minHeight: 0, padding: size(12), gap: size(10) }}>
       <Text style={text(10, true)}>Edit, copy or save this snippet. The conversation stays unchanged.</Text>
-      <Editor testID="chat-code-editor" ref={(value) => { editor = value; }} value={draft()} onChange={(value) => { draft.set(value); message.set(""); }}
+      <Editor testID="chat-code-editor" ref={(value) => { editor = value; }} value={draft()} onChange={({ value }) => { draft.set(value); message.set(""); }}
         language={props.snippet.language} readOnly={busy() || confirming()} autoFocus={true} softWrap={true} autoClose={false} scrollBeyondLastLine={false}
         fontFamily={props.theme().monoFamily} fontSize={12 * props.theme().scale} lineHeight={18 * props.theme().scale} {...props.focus.track("editor")}
         accessibilityLabel="Snippet scratch copy" style={{ flex: 1, minHeight: 0, borderWidth: 1, borderRadius: 5, borderColor: palette().divider, backgroundColor: palette().bg }} />
       {!bounded() && <Text role="text" style={{ ...text(), color: palette().gold }}>Reader/export limit: 256 KiB. Shorten the scratch copy before saving.</Text>}
-      {!!message() && <Text role="text" selectable={true} style={text()}>{message()}</Text>}
+      {!!message() && <Text role="text" style={{ ...text(), userSelect: "text" }}>{message()}</Text>}
       {confirming() ? <View style={{ gap: size(8) }}>
         <Text style={{ ...text(12), fontWeight: "600" }}>Discard the edited scratch copy?</Text>
         <Text style={text(11, true)}>Copy or save the scratch copy to keep your edits. The conversation is unchanged.</Text>
         <View style={{ flexDirection: "row", flexWrap: "wrap", justifyContent: "flex-end", gap: size(8) }}>
-          {button("keep", () => "Keep editing", keepEditing, undefined, undefined, (node) => node.focus())}
+          {button("keep", () => "Keep editing", keepEditing, undefined, undefined, (node) => focusView(node))}
           {button("discard", () => "Discard and close", () => discard(), undefined, palette().gold)}
         </View>
       </View> : <View style={{ flexDirection: "row", flexWrap: "wrap", justifyContent: "flex-end", gap: size(8) }}>

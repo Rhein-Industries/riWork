@@ -54,7 +54,7 @@ export function createPadChrome(app: MobileApp, host: Accessor<string | null>, w
     else if (link.state !== "connecting") actions.push({ id: "connect", label: "Connect" });
     actions.push({ id: "settings", label: "Display and keyboard settings" }, { id: "cancel", label: "Cancel", role: "cancel" });
     menuOpen.set(true);
-    const choice = await AlertDialog.show({ title: app.hostName(hostId), description: gateway ? `via ${gateway.name} · ${linkText(link)}` : linkText(link), presentation: "actionSheet", actions }).catch(() => null);
+    const choice = (await AlertDialog.show({ title: app.hostName(hostId), description: gateway ? `via ${gateway.name} · ${linkText(link)}` : linkText(link), presentation: "actionSheet", actions }).catch(() => null))?.action;
     menuOpen.set(false);
     // Another desktop's window, or All desktops, starts with the sidebar closed over it.
     if (choice?.startsWith("host:") || choice === "all") overlayOpen.set(false);
@@ -109,8 +109,8 @@ export function TabDot(props: { ui: Kit; status: string }) {
   const { ui } = props;
   const color = () => props.status === "working" ? ui.palette().working : props.status === "waiting" || props.status === "error" ? ui.palette().gold : ui.palette().muted;
   const side = () => props.status === "idle" ? ui.pt(4) : ui.pt(8);
-  return <>{["working", "waiting", "error", "done", "idle", "stopped"].includes(props.status) && <View pointerEvents="none" accessible={false}
-    style={{ width: ui.pt(8), height: ui.pt(8), flexShrink: 0, alignItems: "center", justifyContent: "center" }}>
+  return <>{["working", "waiting", "error", "done", "idle", "stopped"].includes(props.status) && <View accessible={false}
+    style={{ width: ui.pt(8), height: ui.pt(8), flexShrink: 0, alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
     <View style={{ width: side(), height: side(), borderRadius: side() / 2, borderWidth: props.status === "stopped" ? 1 : 0, borderColor: color(),
       backgroundColor: props.status === "stopped" ? "transparent" : color() }} />
   </View>}</>;
@@ -121,7 +121,7 @@ export function LinkDot(props: { ui: Kit; link: LinkState }) {
   const { ui } = props;
   const color = () => props.link.state === "connected" ? ui.palette().working : props.link.state === "connecting" ? ui.palette().gold
     : props.link.state === "failed" ? ui.palette().danger : ui.palette().muted;
-  return <View pointerEvents="none" accessible={false} style={{ width: ui.pt(8), height: ui.pt(8), borderRadius: ui.pt(4), flexShrink: 0, backgroundColor: color() }} />;
+  return <View accessible={false} style={{ width: ui.pt(8), height: ui.pt(8), borderRadius: ui.pt(4), flexShrink: 0, backgroundColor: color(), pointerEvents: "none" }} />;
 }
 
 /** The host switcher at the end of the sidebar's part of the top row: the desktop's name with its link's dot;
@@ -133,7 +133,7 @@ export function HostSwitcher(props: { app: MobileApp; ui: Kit; chrome: PadChrome
     disabled={app.blocked()} onPress={props.chrome.hostMenu} activeStyle={{ backgroundColor: ui.palette().panelActive }}
     style={{ flex: 1, minWidth: 0, height: ui.bar(), flexDirection: "row", alignItems: "center", gap: ui.pt(7), paddingHorizontal: ui.pt(8), borderRadius: ui.pt(8) }}>
     <LinkDot ui={ui} link={link()} />
-    <Text numberOfLines={1} style={{ ...ui.text(13), fontWeight: "600", flexShrink: 1 }}>{app.hostName(props.host)}</Text>
+    <Text style={{ ...ui.text(13), fontWeight: "600", flexShrink: 1, numberOfLines: 1 }}>{app.hostName(props.host)}</Text>
     <Icon name="down" size={ui.pt(12)} color={ui.palette().muted} />
   </View>;
 }
@@ -159,17 +159,17 @@ export function StatusBar(props: { app: MobileApp; ui: Kit; chrome: PadChrome; h
   return <View testID="status-bar" style={{ flexShrink: 0, flexDirection: "row", alignItems: "flex-start", height: bar() + insets().bottom,
     paddingLeft: ui.pt(16), paddingRight: ui.pt(6), gap: ui.pt(20), backgroundColor: ui.palette().panel, borderTopWidth: 1, borderColor: ui.palette().divider }}>
     <View style={{ height: bar(), flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: ui.pt(20) }}>
-      <Text testID="status-project" numberOfLines={1} style={{ ...small("accent"), flexShrink: 0, maxWidth: ui.pt(260) }}>{props.project()?.name ?? "Dashboard"}</Text>
-      {counts() && <Text testID="status-tabs" numberOfLines={1} style={{ ...small(), flexShrink: 1 }}>{counts()}</Text>}
+      <Text testID="status-project" style={{ ...small("accent"), flexShrink: 0, maxWidth: ui.pt(260), numberOfLines: 1 }}>{props.project()?.name ?? "Dashboard"}</Text>
+      {counts() && <Text testID="status-tabs" style={{ ...small(), flexShrink: 1, numberOfLines: 1 }}>{counts()}</Text>}
       <View style={{ flex: 1 }} />
-      {status()?.live != null && <Text testID="status-live" numberOfLines={1} style={{ ...small(), fontFamily: app.theme().theme.monoFamily, flexShrink: 0 }}>{`${status()!.live} live`}</Text>}
+      {status()?.live != null && <Text testID="status-live" style={{ ...small(), fontFamily: app.theme().theme.monoFamily, flexShrink: 0, numberOfLines: 1 }}>{`${status()!.live} live`}</Text>}
     </View>
     <View testID="status-link" role="button" accessibilityLabel={`${app.hostName(props.host)}, ${linkText(link())}. Desktops`} disabled={app.blocked()}
       onPress={chrome.hostMenu} activeStyle={{ backgroundColor: ui.palette().panelActive }}
       style={{ height: bar() + insets().bottom, paddingBottom: insets().bottom, minWidth: ui.target(), maxWidth: ui.pt(300), flexDirection: "row", alignItems: "center",
         justifyContent: "center", gap: ui.pt(7), paddingHorizontal: ui.pt(10), borderRadius: ui.pt(8) }}>
       <LinkDot ui={ui} link={link()} />
-      <Text numberOfLines={1} style={{ ...small(), flexShrink: 1 }}>{link().state === "connected" ? app.hostName(props.host) : link().label}</Text>
+      <Text style={{ ...small(), flexShrink: 1, numberOfLines: 1 }}>{link().state === "connected" ? app.hostName(props.host) : link().label}</Text>
     </View>
   </View>;
 }

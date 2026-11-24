@@ -71,7 +71,7 @@ export function SpeechModelPicker(props: { selected: () => string; onChoose: (ke
           <Text style={{ ...textStyle(theme), fontWeight: chosen() ? "600" : "400", opacity: selectable ? 1 : 0.6 }}>{model.label}</Text>
           <Text style={muted()}>{model.detail}</Text>
           <Text testID={`speech-model-state-${model.key}`} style={{ ...muted(), color: busy ? theme().palette.working : model.status === "ready" || model.status === "builtin" ? theme().palette.cyan : theme().palette.muted }}>{speechModelState(model)}</Text>
-          {!!model.error && <Text testID={`speech-model-error-${model.key}`} selectable={true} style={{ ...muted(), color: theme().palette.gold }}>{model.error}</Text>}
+          {!!model.error && <Text testID={`speech-model-error-${model.key}`} style={{ ...muted(), color: theme().palette.gold, userSelect: "text" }}>{model.error}</Text>}
           {chosen() && (model.status === "missing" || model.status === "setup") && <Text style={{ ...muted(), color: theme().palette.gold }}>Dictation uses this model once it is on this Mac.</Text>}
         </View>
       </Button>
@@ -90,6 +90,6 @@ export function SpeechModelPicker(props: { selected: () => string; onChoose: (ke
     {catalog()?.models.map(row)}
     {!catalog() && <Text style={muted()}>Checking which models are on this Mac…</Text>}
     {catalog() && !catalog()!.runtime.uv && !catalog()!.runtime.ready && <Text testID="speech-models-uv" style={{ ...muted(), color: theme().palette.gold }}>Local models need uv to set up their runtime. Install it with `brew install uv`, then come back here.</Text>}
-    {!!catalog()?.cache && <Text selectable={true} style={muted(9)}>{`Model cache: ${catalog()!.cache}`}</Text>}
+    {!!catalog()?.cache && <Text style={{ ...muted(9), userSelect: "text" }}>{`Model cache: ${catalog()!.cache}`}</Text>}
   </View>;
 }

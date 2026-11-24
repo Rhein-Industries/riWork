@@ -4,19 +4,26 @@
 //! The cheap path is the view's own layer: `cornerRadius` covers every
 //! shape whose corners share one radius. Other corners need shape layers
 //! (scroll views take the largest radius instead). A view
-//! that both clips its children and casts a shadow gets a container
-//! ([`NshView::ensure_container`]) that clips the children, so its own
-//! layer keeps the shadow (clipping a layer clips its shadow too). Scroll
+//! that both clips its children and draws outside its box (an outer box
+//! shadow, an outline) gets a container ([`NshView::ensure_container`])
+//! that clips the children, so its own layer keeps what it draws outside
+//! (clipping a layer clips that too). Scroll
 //! views always have a container: there it clips too, and the decoration
 //! stays in the view's own layer, where it does not scroll.
 //!
-//! Text and canvas views draw into their layer's contents (`drawRect:`),
-//! which Core Animation shows below every sublayer: their background is the
-//! layer's own, never a fill layer, and nothing inside the box is drawn over
-//! them but borders.
+//! A shader view's frames are the contents of a sublayer
+//! ([`crate::shader`]) shaped here as an image view's image layer is. An
+//! effect's or a running transition's frames show instead of the children:
+//! their container's mask hides them ([`hide_children`]), and clipping
+//! leaves it in place until they show again.
 //!
-//! With a background a shadow gets a `shadowPath` (no offscreen pass); with
-//! a transparent background it follows the content (text shadows).
+//! Text and canvas views draw into a content sublayer
+//! ([`NshView::redraw`]: `drawLayer:inContext:`) at `BEHIND / 2`, above the
+//! decoration behind them and below their children and the borders in
+//! front. Their background is the layer's own, never a fill layer.
+//!
+//! A `drop-shadow()` filter is the layer's own shadow: it follows the
+//! content.
 //!
 //! [`apply`] runs on every frame of an animation that touches the view
 //! (transitions, animated colors): it compares what it applied last and
@@ -38,7 +45,7 @@ use objc2_quartz_core::{
 };
 
 use crate::{
-    image::Decoded,
+    image::Picture,
     surface::quiet,
     view::{NshView, ViewState},
 };
@@ -75,8 +82,8 @@ impl Kind {
     }
 }
 
-/// What shapes the layers: when it is unchanged, only colors may need
-/// setting again.
+/// What shapes the layers: when it and the blend mode are unchanged, only
+/// colors may need setting again.
 #[derive(Clone, PartialEq)]
 struct Shape {
     kind: Kind,
@@ -87,12 +94,21 @@ struct Shape {
     border_style: BorderStyle,
     /// Whether every side has the same color (one ring layer, or four).
     one_color: bool,
-    shadow: bool,
-    shadow_offset: (Points, Points),
-    solid: bool,
+    /// Whether a side draws something: [`Decor::shape`] gives the layers a
+    /// border only then, so a transparent border turning visible (a
+    /// `border-transparent` row's `focus:border-*`) shapes them again.
+    border_visible: bool,
     tint: Option<Color>,
     outline: nsh_core::Outline,
     effects: Option<std::sync::Arc<nsh_core::Effects>>,
+    /// The glass effect, its tint, and `macos={{ backdrop }}`: a change
+    /// redraws the backdrop (its material, style or tint), which no other
+    /// entry of the shape covers.
+    glass: nsh_core::GlassEffect,
+    glass_tint: Option<Color>,
+    backdrop: Option<nsh_core::MacOsBackdrop>,
+    /// It shows a shader's frames ([`crate::shader`]).
+    shader: bool,
 }
 
 /// The colors [`apply`] set last.
@@ -100,7 +116,6 @@ struct Shape {
 struct Colors {
     background: Color,
     borders: [Color; 4],
-    shadow: (Color, f32, Points),
 }
 
 /// The layers decoration added to a view, created on demand.
@@ -112,6 +127,9 @@ pub(crate) struct Decor {
     stroke: Option<Retained<CAShapeLayer>>,
     /// Clip shape for corners of different radii.
     mask: Option<Retained<CAShapeLayer>>,
+    /// A shader draws instead of the children: their container's mask
+    /// hides them ([`hide_children`]) in place of the clip shape.
+    hidden: bool,
     /// Borders whose sides differ: one even-odd ring per color.
     ring: Vec<Retained<CAShapeLayer>>,
     /// Image content (image views only): clips the picture to the view's
@@ -121,7 +139,7 @@ pub(crate) struct Decor {
     /// mode and the position put it.
     picture: Option<Retained<CALayer>>,
     /// The image shown, and its natural size in points.
-    contents: Option<(Decoded, (f32, f32))>,
+    contents: Option<(Picture, (f32, f32))>,
     /// How the image fits.
     mode: ResizeMode,
     /// Where the fitted image sits.
@@ -129,11 +147,15 @@ pub(crate) struct Decor {
     /// `tintColor`: the image layer shows this color through a mask of the
     /// image.
     tint: Option<(Color, Retained<CALayer>)>,
-    /// Layered shadows, gradients, outline, filters.
-    visual: crate::visual::Visual,
+    /// Layered shadows, gradients, outline, filters: boxed once a view has
+    /// one, since most views have none and a view's state is allocated
+    /// with its AppKit view.
+    visual: Option<Box<crate::visual::Visual>>,
     /// What was applied last.
     shape: Option<Box<Shape>>,
     colors: Option<Colors>,
+    /// The `mixBlendMode` set on the view's layer (`normal`: none).
+    blend: nsh_core::BlendMode,
 }
 
 impl Decor {
@@ -159,7 +181,7 @@ impl Decor {
 
     /// Shows `image` (natural size `natural` in points), fading in over
     /// `fade` seconds; an animated image plays its frames, forever.
-    pub(crate) fn set_image(&mut self, image: Option<(&Decoded, (f32, f32))>, fade: f64) {
+    pub(crate) fn set_image(&mut self, image: Option<(&Picture, (f32, f32))>, fade: f64) {
         self.contents = image.map(|(d, n)| (d.clone(), n));
         self.image_layer();
         let Some(layer) = self.picture.clone() else {
@@ -230,7 +252,7 @@ impl Decor {
         self.mode
     }
 
-    /// How an image view fits its image (`resizeMode`) and where it places
+    /// How an image view fits its image (`objectFit`) and where it places
     /// it (`objectPosition`).
     pub(crate) fn set_fit(&mut self, mode: ResizeMode, position: ObjectPosition) {
         if self.mode != mode || self.position != position || self.image.is_none() {
@@ -334,19 +356,19 @@ impl Decor {
             s.setStrokeColor(cg_color(b.colors[0]).as_deref());
         }
         for (i, r) in self.ring.iter().enumerate() {
-            r.setFillColor(cg_color(b.colors[i]).as_deref());
+            let color = cg_color(b.colors[i]);
+            if b.style == BorderStyle::Solid {
+                r.setStrokeColor(None);
+                r.setFillColor(color.as_deref());
+            } else {
+                r.setFillColor(None);
+                r.setStrokeColor(color.as_deref());
+            }
         }
         let border_layer = container.unwrap_or(layer);
         if border_layer.borderWidth() > 0.0 {
             border_layer.setBorderColor(cg_color(b.colors[0]).as_deref());
         }
-    }
-
-    /// Sets the shadow's color, opacity and radius.
-    fn set_shadow(layer: &CALayer, shadow: &nsh_core::Shadow) {
-        layer.setShadowColor(cg_color(shadow.color).as_deref());
-        layer.setShadowOpacity(shadow.opacity.clamp(0.0, 1.0));
-        layer.setShadowRadius(shadow.radius.max(Points::ZERO).0 as CGFloat);
     }
 
     /// Shapes the layers of `view` after `s` at its current size.
@@ -500,20 +522,18 @@ impl Decor {
         // view on every scroll step. Not with a shadow or anything drawn
         // outside, which the mask would cut.
         let contained = kind == Kind::Text
-            && !shape.shadow
             && !crate::visual::draws_outside(style)
             && crate::visual::drop_shadow(style).is_none();
         if let Some(cl) = clip_layer {
             cl.setMasksToBounds((clips && shared.is_some()) || (contained && container.is_none()));
-            if masks {
-                let m = shape_mask(&mut self.mask, local, radii);
-                // SAFETY: a mask layer owned by this decoration.
-                unsafe { cl.setMask(Some(&m)) };
+            let mask = if masks {
+                Some(shape_mask(&mut self.mask, local, radii))
             } else {
-                // SAFETY: clearing the mask.
-                unsafe { cl.setMask(None) };
                 self.mask = None;
-            }
+                None
+            };
+            let mask: Option<&CALayer> = mask.as_deref().map(|m| &**m);
+            set_clip_mask(cl, mask, self.hidden && container.is_some());
         }
 
         // Image content follows the view's shape.
@@ -537,17 +557,27 @@ impl Decor {
             self.fit_contents();
         }
 
-        // Shadow. With a background the shape is known and passed as a
-        // path, which spares Core Animation an offscreen pass.
-        if shape.shadow {
-            let sh = style.shadow;
-            layer.setShadowOffset(CGSize::new(
-                sh.offset_x.0 as CGFloat,
-                sh.offset_y.0 as CGFloat,
-            ));
-            let path = shape.solid.then(|| rounded(local, radii));
-            layer.setShadowPath(path.as_deref().map(|p| &**p));
-        } else if let Some((x, y, blur, color)) = crate::visual::drop_shadow(style) {
+        // A shader's frames fill the view's shape, as a background does
+        // (clipped even when the children are not).
+        if let Some(shader) = s.shader.as_ref().filter(|s| s.fills()) {
+            let l = shader.layer();
+            l.setFrame(local);
+            set_corners(l, r, continuous);
+            if shared.is_some() {
+                // SAFETY: clearing the mask.
+                unsafe { l.setMask(None) };
+            } else {
+                let m = CAShapeLayer::new();
+                m.setPath(Some(&rounded(local, radii)));
+                // SAFETY: a fresh mask layer, owned by the shader layer.
+                unsafe { l.setMask(Some(&m)) };
+            }
+            if l.superlayer().is_none() {
+                layer.addSublayer(l);
+            }
+        }
+
+        if let Some((x, y, blur, color)) = crate::visual::drop_shadow(style) {
             // `drop-shadow()`: follows the content's shape (no path).
             layer.setShadowColor(cg_color(Color(color.0 | 0xff)).as_deref());
             layer.setShadowOpacity((color.0 & 0xff) as f32 / 255.0);
@@ -559,19 +589,21 @@ impl Decor {
             layer.setShadowPath(None);
         }
         let covered = covers_shadows && kind != Kind::Text;
-        self.visual.apply(
-            view,
-            layer,
-            style,
-            local,
-            radii,
-            kind == Kind::Text,
-            covered,
-        );
+        let text = kind == Kind::Text;
+        match &mut self.visual {
+            Some(visual) => visual.apply(view, layer, style, local, radii, text, covered),
+            None => {
+                let mut visual = crate::visual::Visual::default();
+                visual.apply(view, layer, style, local, radii, text, covered);
+                if !visual.is_empty() {
+                    self.visual = Some(Box::new(visual));
+                }
+            }
+        }
     }
 
-    /// Draws borders with differing sides: the ring between the outer and
-    /// the inner edge, one layer per side color, each masked to its side.
+    /// Draws borders with differing sides: a filled ring for solid borders,
+    /// or a stroke per side for patterns, masked to each side's trapezoid.
     fn set_ring(
         &mut self,
         layer: &CALayer,
@@ -589,7 +621,11 @@ impl Decor {
         let [top, right, bottom, left] = b.widths.to_array().map(|w| w.0 as CGFloat);
         let ring = ring_path(local, radii, [top, right, bottom, left]);
         let same_color = b.colors.iter().all(|&c| c == b.colors[0]);
-        let count = if same_color { 1 } else { 4 };
+        let count = if same_color && b.style == BorderStyle::Solid {
+            1
+        } else {
+            4
+        };
         while self.ring.len() > count {
             if let Some(r) = self.ring.pop() {
                 r.removeFromSuperlayer();
@@ -606,7 +642,21 @@ impl Decor {
         for (i, r) in self.ring.iter().enumerate() {
             r.setZPosition(if behind { BORDER_BEHIND } else { IN_FRONT });
             r.setFrame(local);
-            r.setPath(Some(&ring));
+            if b.style == BorderStyle::Solid {
+                r.setPath(Some(&ring));
+                r.setHidden(false);
+            } else {
+                // Stroke each side at its own width, then keep only its
+                // trapezoid. Merely dashing the filled ring has no effect.
+                let width = b.widths.to_array()[i].0;
+                r.setHidden(width <= 0.0);
+                if width <= 0.0 {
+                    continue;
+                }
+                r.setPath(Some(&side_stroke(local, radii, i, width)));
+                r.setLineWidth(width as CGFloat);
+                set_dashes(r, b.style, width);
+            }
             if count == 1 {
                 // SAFETY: clearing the mask.
                 unsafe { r.setMask(None) };
@@ -644,6 +694,70 @@ impl Decor {
     }
 }
 
+/// Square sides use an open line: a closed rectangle would double back
+/// over itself on a one-point separator, filling the dash gaps.
+fn side_stroke(
+    rect: CGRect,
+    radii: CornerRadii,
+    side: usize,
+    width: f32,
+) -> CFRetained<CGMutablePath> {
+    let half = width as CGFloat / 2.0;
+    if radii.to_array().iter().any(|r| r.0 > 0.0) {
+        return rounded(inset(rect, half), radii.inset(px(width / 2.0)));
+    }
+    let (w, h) = (rect.size.width, rect.size.height);
+    let (start, end) = match side {
+        0 => ((0.0, half), (w, half)),
+        1 => ((w - half, 0.0), (w - half, h)),
+        2 => ((w, h - half), (0.0, h - half)),
+        _ => ((half, h), (half, 0.0)),
+    };
+    let path = CGMutablePath::new();
+    // SAFETY: a valid mutable path and a null transform.
+    unsafe {
+        CGMutablePath::move_to_point(Some(&path), std::ptr::null(), start.0, start.1);
+        CGMutablePath::add_line_to_point(Some(&path), std::ptr::null(), end.0, end.1);
+    }
+    path
+}
+
+/// Clips the children with `mask` (corners of different radii) or none on
+/// `cl`, the layer that clips them, unless a shader `hides` them: their
+/// container keeps the mask that hides them ([`hide_children`]).
+fn set_clip_mask(cl: &CALayer, mask: Option<&CALayer>, hides: bool) {
+    if !hides {
+        // SAFETY: a mask layer owned by this decoration (or none).
+        unsafe { cl.setMask(mask) };
+    }
+}
+
+/// Hides `view`'s children while a shader draws instead of them
+/// ([`crate::shader`]): an empty mask on their container (AppKit hit-tests
+/// views, so they keep their clicks), which clipping leaves in place.
+/// Shown again, the view is shaped anew and its own clip comes back.
+pub(crate) fn hide_children(view: &NshView, hidden: bool) {
+    {
+        let mut state = view.state_mut();
+        if state.decor.hidden == hidden {
+            return;
+        }
+        state.decor.hidden = hidden;
+        if !hidden {
+            state.decor.shape = None;
+        }
+    }
+    if !hidden {
+        apply(view);
+        return;
+    }
+    if let Some(layer) = view.ensure_container().layer() {
+        let mask = CALayer::new();
+        // SAFETY: a fresh, empty mask layer owned by the container's layer.
+        quiet(|| unsafe { layer.setMask(Some(&mask)) });
+    }
+}
+
 /// Applies a view's decoration (background, corners, borders, shadows,
 /// clipping, effects) to its layers. Cheap when nothing changed.
 pub(crate) fn apply(view: &NshView) {
@@ -655,9 +769,7 @@ pub(crate) fn apply(view: &NshView) {
     // an outline) clips them in a container instead.
     let needs_container = {
         let s = view.state();
-        kind == Kind::View
-            && s.clips()
-            && (s.style.shadow.is_visible() || crate::visual::draws_outside(&s.style))
+        kind == Kind::View && s.clips() && crate::visual::draws_outside(&s.style)
     };
     if needs_container && view.container_view().is_none() {
         view.ensure_container();
@@ -666,15 +778,19 @@ pub(crate) fn apply(view: &NshView) {
     let mut guard = view.state_mut();
     let state = &mut *guard;
     let shape = shape_of(state, kind);
-    let shadow = state.shadow();
     let borders = state.borders();
     let colors = Colors {
         background: state.background(),
         borders: borders.colors,
-        shadow: (shadow.color, shadow.opacity, shadow.radius),
     };
     let reshape = state.decor.shape.as_deref() != Some(&shape);
-    if !reshape && state.decor.colors == Some(colors) {
+    // `mixBlendMode` goes on the view's own layer, which composites its
+    // content layer, fill layers and the container clipped children live
+    // in as one with what is behind it: a view that gains or loses either
+    // keeps the filter where it is (the view's layer stays the outermost).
+    let blend = state.style.blend_mode;
+    let blend_changed = state.decor.blend != blend;
+    if !reshape && state.decor.colors == Some(colors) && !blend_changed {
         return;
     }
     quiet(|| {
@@ -687,12 +803,13 @@ pub(crate) fn apply(view: &NshView) {
         let d = &state.decor;
         d.set_background(&layer, colors.background);
         d.set_border_colors(&layer, container.as_deref(), &borders);
-        if shape.shadow {
-            Decor::set_shadow(&layer, &shadow);
+        if blend_changed {
+            crate::visual::set_blend(&layer, blend);
         }
     });
     state.decor.shape = Some(Box::new(shape));
     state.decor.colors = Some(colors);
+    state.decor.blend = blend;
     drop(guard);
     if kind == Kind::Image {
         // An image decodes at its view's size, once that is known.
@@ -705,7 +822,6 @@ fn shape_of(s: &ViewState, kind: Kind) -> Shape {
     let style = &s.style;
     let (w, h) = (s.frame.size.width.0, s.frame.size.height.0);
     let borders = s.borders();
-    let shadow = s.shadow();
     Shape {
         kind,
         size: (w, h),
@@ -714,12 +830,14 @@ fn shape_of(s: &ViewState, kind: Kind) -> Shape {
         widths: borders.widths,
         border_style: borders.style,
         one_color: borders.colors.iter().all(|&c| c == borders.colors[0]),
-        shadow: shadow.is_visible() || s.anim.shadow_opacity.is_some(),
-        shadow_offset: (style.shadow.offset_x, style.shadow.offset_y),
-        solid: !style.background_color.is_transparent() || s.anim.background.is_some(),
+        border_visible: borders.is_visible(),
         tint: style.tint_color,
         outline: style.outline,
         effects: style.effects.clone(),
+        glass: style.glass_effect,
+        glass_tint: style.glass_tint_color,
+        backdrop: style.macos_backdrop,
+        shader: s.shader.as_ref().is_some_and(|s| s.fills()),
     }
 }
 
@@ -756,7 +874,7 @@ pub(crate) fn cg_color(color: Color) -> Option<CFRetained<CGColor>> {
 }
 
 /// A CGImage as an object (`contents` values).
-fn image_object(image: &objc2_core_graphics::CGImage) -> Retained<AnyObject> {
+pub(crate) fn image_object(image: &objc2_core_graphics::CGImage) -> Retained<AnyObject> {
     let ptr = image as *const objc2_core_graphics::CGImage as *mut AnyObject;
     // SAFETY: CF objects are Objective-C objects; retained for the result.
     unsafe { Retained::retain(ptr) }.expect("image")
@@ -771,9 +889,10 @@ pub(crate) fn set_dashes(layer: &CAShapeLayer, style: BorderStyle, width: f32) {
             NSNumber::new_f64(w * 3.0),
             NSNumber::new_f64(w * 3.0),
         ])),
-        // Zero-length dashes with round caps draw dots.
+        // A tiny positive dash keeps Core Animation from dropping dots on
+        // an open, straight path. Round caps supply the visible circle.
         BorderStyle::Dotted => Some(NSArray::from_retained_slice(&[
-            NSNumber::new_f64(0.0),
+            NSNumber::new_f64(w * 0.001),
             NSNumber::new_f64(w * 2.0),
         ])),
     };
@@ -814,8 +933,8 @@ pub(crate) fn inset(rect: CGRect, d: CGFloat) -> CGRect {
 /// borders `[top, right, bottom, left]` wide, for an even-odd fill. Inner
 /// corners are elliptical where the adjacent sides differ.
 fn ring_path(rect: CGRect, radii: CornerRadii, widths: [CGFloat; 4]) -> CFRetained<CGMutablePath> {
-    let path = rounded(rect, radii);
     let [top, right, bottom, left] = widths;
+    let [tl, tr, br, bl] = radii.to_array().map(|r| r.0 as CGFloat);
     let inner = CGRect::new(
         CGPoint::new(rect.origin.x + left, rect.origin.y + top),
         CGSize::new(
@@ -824,9 +943,38 @@ fn ring_path(rect: CGRect, radii: CornerRadii, widths: [CGFloat; 4]) -> CFRetain
         ),
     );
     if inner.size.width <= 0.0 || inner.size.height <= 0.0 {
+        return rounded(rect, radii);
+    }
+    // Without rounded corners, emit only the sides that have thickness: two
+    // concentric rectangles share collinear edges on 0-width sides, which Core
+    // Animation's Metal rasterizer antialiases into a 1px seam across cells at
+    // fractional scroll offsets.
+    if tl <= 0.0 && tr <= 0.0 && br <= 0.0 && bl <= 0.0 {
+        let path = CGMutablePath::new();
+        let (x0, y0, w, h) = (
+            rect.origin.x,
+            rect.origin.y,
+            rect.size.width,
+            rect.size.height,
+        );
+        let add_rect = |x: CGFloat, y: CGFloat, rw: CGFloat, rh: CGFloat| {
+            if rw > 0.0 && rh > 0.0 {
+                // SAFETY: `path` is a live mutable path and the transform is null.
+                unsafe {
+                    CGMutablePath::add_rect(
+                        Some(&path),
+                        std::ptr::null(),
+                        CGRect::new(CGPoint::new(x, y), CGSize::new(rw, rh)),
+                    );
+                }
+            }
+        };
+        add_rect(x0, y0, w, top);
+        add_rect(x0, y0 + h - bottom, w, bottom);
+        add_rect(x0, y0 + top, left, h - top - bottom);
+        add_rect(x0 + w - right, y0 + top, right, h - top - bottom);
         return path;
     }
-    let [tl, tr, br, bl] = radii.to_array().map(|r| r.0 as CGFloat);
     // (horizontal, vertical) radii of each inner corner.
     let corner = |r: CGFloat, h: CGFloat, v: CGFloat| ((r - h).max(0.0), (r - v).max(0.0));
     let corners = [
@@ -835,8 +983,162 @@ fn ring_path(rect: CGRect, radii: CornerRadii, widths: [CGFloat; 4]) -> CFRetain
         corner(br, right, bottom),
         corner(bl, left, bottom),
     ];
+    // One open flat edge opposite rounded corners (e.g. a closing cell with
+    // `border-x border-b rounded-b`, or a header with `border-x border-t rounded-t`):
+    // join the outer clockwise U and the inner counterclockwise U into one
+    // closed U-polygon so no segment crosses the open span.
+    if let Some(open) = open_u_side(widths, [tl, tr, br, bl]) {
+        let outer_corners = [tl, tr, br, bl].map(|r| (r, r));
+        if let Some(path) =
+            joined_u_path(rect, outer_corners, inner, corners, radii.continuous, open)
+        {
+            return path;
+        }
+    }
+    let path = rounded(rect, radii);
     add_outline(&path, inner, corners, radii.continuous, false);
     path
+}
+
+/// Returns the index `0..4` (`top`, `right`, `bottom`, `left`) when that side
+/// and its two corners are zero while the other three sides have positive width.
+fn open_u_side(widths: [CGFloat; 4], radii: [CGFloat; 4]) -> Option<usize> {
+    let [top, right, bottom, left] = widths;
+    let [tl, tr, br, bl] = radii;
+    let candidates = [
+        (
+            top <= 0.0 && tl <= 0.0 && tr <= 0.0,
+            right > 0.0 && bottom > 0.0 && left > 0.0,
+        ),
+        (
+            right <= 0.0 && tr <= 0.0 && br <= 0.0,
+            bottom > 0.0 && left > 0.0 && top > 0.0,
+        ),
+        (
+            bottom <= 0.0 && br <= 0.0 && bl <= 0.0,
+            left > 0.0 && top > 0.0 && right > 0.0,
+        ),
+        (
+            left <= 0.0 && bl <= 0.0 && tl <= 0.0,
+            top > 0.0 && right > 0.0 && bottom > 0.0,
+        ),
+    ];
+    candidates
+        .iter()
+        .position(|&(is_open, rest_closed)| is_open && rest_closed)
+}
+
+/// Joins the 3-sided outer CW contour and inner CCW contour around `open`
+/// (`0` = top, `1` = right, `2` = bottom, `3` = left) into a single U-polygon.
+fn joined_u_path(
+    outer: CGRect,
+    outer_corners: [(CGFloat, CGFloat); 4],
+    inner: CGRect,
+    inner_corners: [(CGFloat, CGFloat); 4],
+    continuous: bool,
+    open: usize,
+) -> Option<CFRetained<CGMutablePath>> {
+    let path = CGMutablePath::new();
+    add_open_u(&path, outer, outer_corners, continuous, false, open, true)?;
+    add_open_u(&path, inner, inner_corners, continuous, true, open, false)?;
+    CGMutablePath::close_subpath(Some(&path));
+    Some(path)
+}
+
+/// Appends the 3 closed sides of `rect` (omitting side `open`) to `path`,
+/// starting with `move_to` (`first_move`) or `line_to`.
+fn add_open_u(
+    path: &CGMutablePath,
+    rect: CGRect,
+    corners: [(CGFloat, CGFloat); 4],
+    continuous: bool,
+    reverse: bool,
+    open: usize,
+    first_move: bool,
+) -> Option<()> {
+    use nsh_core::{
+        Corners, Point, Points,
+        geometry::{bounds, point, size},
+        shape::Segment,
+    };
+    let pt = |v: CGFloat| Points(v as f32);
+    let b = bounds(
+        point(pt(rect.origin.x), pt(rect.origin.y)),
+        size(pt(rect.size.width), pt(rect.size.height)),
+    );
+    let [tl, tr, br, bl] = corners.map(|(h, v)| size(pt(h), pt(v)));
+    let mut raw = Vec::with_capacity(14);
+    nsh_core::shape::rounded_rect(
+        b,
+        Corners {
+            top_left: tl,
+            top_right: tr,
+            bottom_right: br,
+            bottom_left: bl,
+        },
+        continuous,
+        reverse,
+        &mut |s| {
+            if !matches!(s, Segment::Close) {
+                raw.push(s);
+            }
+        },
+    );
+    let Segment::Move(first) = *raw.first()? else {
+        return None;
+    };
+    raw[0] = Segment::Line(first);
+    let end_of = |s: Segment| match s {
+        Segment::Move(p) | Segment::Line(p) => p,
+        Segment::Cubic([_, _, p]) => p,
+        Segment::Close => first,
+    };
+    let (x0, y0) = (b.origin.x.0, b.origin.y.0);
+    let (x1, y1) = (x0 + b.size.width.0, y0 + b.size.height.0);
+    let (cw_enter, cw_leave) = match open {
+        0 => ((x0, y0), (x1, y0)),
+        1 => ((x1, y0), (x1, y1)),
+        2 => ((x1, y1), (x0, y1)),
+        _ => ((x0, y1), (x0, y0)),
+    };
+    let (enter, leave) = if reverse {
+        (cw_leave, cw_enter)
+    } else {
+        (cw_enter, cw_leave)
+    };
+    let near = |p: Point<Points>, q: (f32, f32)| {
+        (p.x.0 - q.0).abs() <= 1e-3 && (p.y.0 - q.1).abs() <= 1e-3
+    };
+    let n = raw.len();
+    let cut = (0..n).find(|&i| {
+        matches!(raw[i], Segment::Line(to) if near(to, leave) && near(end_of(raw[(i + n - 1) % n]), enter))
+    })?;
+    let cg = |p: Point<Points>| (p.x.0 as CGFloat, p.y.0 as CGFloat);
+    let p = Some(path);
+    let m = std::ptr::null();
+    let start = cg(end_of(raw[cut]));
+    // SAFETY: `path` is a live mutable path and the transform is null.
+    unsafe {
+        if first_move {
+            CGMutablePath::move_to_point(p, m, start.0, start.1);
+        } else {
+            CGMutablePath::add_line_to_point(p, m, start.0, start.1);
+        }
+        for step in 1..n {
+            match raw[(cut + step) % n] {
+                Segment::Move(to) | Segment::Line(to) => {
+                    let (x, y) = cg(to);
+                    CGMutablePath::add_line_to_point(p, m, x, y);
+                }
+                Segment::Cubic([c1, c2, to]) => {
+                    let ((a, b), (c, d), (x, y)) = (cg(c1), cg(c2), cg(to));
+                    CGMutablePath::add_curve_to_point(p, m, a, b, c, d, x, y);
+                }
+                Segment::Close => {}
+            }
+        }
+    }
+    Some(())
 }
 
 /// A rectangle with the corners `radii` (circular or continuous).
@@ -925,4 +1227,336 @@ pub(crate) fn set_corners(layer: &CALayer, r: CGFloat, continuous: bool) {
             kCACornerCurveCircular
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pixels(layer: &CALayer, w: usize, h: usize) -> Vec<u8> {
+        use objc2_core_graphics::{
+            CGBitmapContextCreate, CGBitmapContextGetData, CGColorSpace, CGImageAlphaInfo,
+        };
+        let space = CGColorSpace::new_device_rgb().unwrap();
+        // SAFETY: CoreGraphics owns the bitmap; the copied slice remains
+        // within the allocated h rows of w RGBA pixels.
+        unsafe {
+            let context = CGBitmapContextCreate(
+                std::ptr::null_mut(),
+                w,
+                h,
+                8,
+                w * 4,
+                Some(&space),
+                CGImageAlphaInfo::PremultipliedLast.0,
+            )
+            .unwrap();
+            layer.renderInContext(&context);
+            std::slice::from_raw_parts(
+                CGBitmapContextGetData(Some(&context)).cast::<u8>(),
+                w * h * 4,
+            )
+            .to_vec()
+        }
+    }
+
+    #[test]
+    fn single_side_patterns_have_gaps_and_solid_restores_the_fill() {
+        for side in 0..4 {
+            for style in [BorderStyle::Dashed, BorderStyle::Dotted] {
+                let (w, h) = if side % 2 == 0 { (120, 1) } else { (1, 120) };
+                let rect = CGRect::new(CGPoint::ZERO, CGSize::new(w as CGFloat, h as CGFloat));
+                let layer = CALayer::new();
+                layer.setFrame(rect);
+                let mut decor = Decor::default();
+                let mut border = Borders::NONE;
+                match side {
+                    0 => border.widths.top = px(1.0),
+                    1 => border.widths.right = px(1.0),
+                    2 => border.widths.bottom = px(1.0),
+                    _ => border.widths.left = px(1.0),
+                }
+                border.style = style;
+                quiet(|| {
+                    decor.set_ring(&layer, Some(&border), rect, CornerRadii::default(), false);
+                    decor.set_border_colors(&layer, None, &border);
+                });
+                let rgba = pixels(&layer, w, h);
+                let painted = rgba.as_chunks::<4>().0.iter().filter(|p| p[3] > 0).count();
+                assert!(
+                    painted > 0 && painted < 100,
+                    "side {side}, {style:?}: {painted} painted pixels"
+                );
+                border.style = BorderStyle::Solid;
+                quiet(|| {
+                    decor.set_ring(&layer, Some(&border), rect, CornerRadii::default(), false);
+                    decor.set_border_colors(&layer, None, &border);
+                });
+                assert!(
+                    pixels(&layer, w, h)
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .all(|p| p[3] == 255)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rounded_unequal_sides_keep_their_patterns() {
+        let rect = CGRect::new(CGPoint::ZERO, CGSize::new(120.0, 80.0));
+        let layer = CALayer::new();
+        layer.setFrame(rect);
+        let mut decor = Decor::default();
+        let mut border = Borders::NONE;
+        border.widths = Edges {
+            top: px(4.0),
+            right: px(2.0),
+            bottom: px(6.0),
+            left: px(3.0),
+        };
+        for style in [BorderStyle::Dashed, BorderStyle::Dotted] {
+            border.style = style;
+            quiet(|| {
+                decor.set_ring(
+                    &layer,
+                    Some(&border),
+                    rect,
+                    CornerRadii::all(px(16.0)),
+                    false,
+                );
+                decor.set_border_colors(&layer, None, &border);
+            });
+            let rgba = pixels(&layer, 120, 80);
+            for side in 0..4 {
+                let painted = (20..60)
+                    .filter(|&i| {
+                        let (x, y) = match side {
+                            0 => (i, 2),
+                            1 => (118, i),
+                            2 => (i, 77),
+                            _ => (1, i),
+                        };
+                        rgba[(y * 120 + x) * 4 + 3] > 128
+                    })
+                    .count();
+                assert!(
+                    painted > 0 && painted < 40,
+                    "side {side}, {style:?}: {painted}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn clipping_leaves_the_mask_that_hides_the_children() {
+        let container = CALayer::new();
+        let hiding = CALayer::new();
+        // SAFETY: an empty mask layer owned by the container.
+        unsafe { container.setMask(Some(&hiding)) };
+        let shape = CAShapeLayer::new();
+        let shape: &CALayer = &shape;
+        set_clip_mask(&container, Some(shape), true);
+        set_clip_mask(&container, None, true);
+        assert!(container.mask().is_some_and(|m| *m == *hiding));
+        // Shown again: the decoration's own clip.
+        set_clip_mask(&container, Some(shape), false);
+        assert!(container.mask().is_some_and(|m| *m == *shape));
+        set_clip_mask(&container, None, false);
+        assert!(container.mask().is_none());
+    }
+
+    /// Collects every line/curve chord `(from, to)` of `path` (`CloseSubpath`
+    /// closes back to the subpath's `MoveToPoint`).
+    fn path_chords(path: &CGMutablePath) -> Vec<((f64, f64), (f64, f64))> {
+        use objc2_core_graphics::{CGPath, CGPathElement, CGPathElementType};
+
+        struct Walk {
+            chords: Vec<((f64, f64), (f64, f64))>,
+            start: (f64, f64),
+            cur: (f64, f64),
+        }
+
+        unsafe extern "C-unwind" fn visit(
+            info: *mut std::ffi::c_void,
+            element: std::ptr::NonNull<CGPathElement>,
+        ) {
+            // SAFETY: `info` points to `walk` on the stack below, and CoreGraphics
+            // passes a valid `CGPathElement` for the duration of this callback.
+            let walk = unsafe { &mut *(info.cast::<Walk>()) };
+            let el = unsafe { element.as_ref() };
+            let pt = |i: usize| unsafe {
+                let p = *el.points.as_ptr().add(i);
+                (p.x, p.y)
+            };
+            match el.r#type {
+                CGPathElementType::MoveToPoint => {
+                    let p = pt(0);
+                    walk.start = p;
+                    walk.cur = p;
+                }
+                CGPathElementType::AddLineToPoint => {
+                    let p = pt(0);
+                    if (p.0 - walk.cur.0).abs() > 1e-6 || (p.1 - walk.cur.1).abs() > 1e-6 {
+                        walk.chords.push((walk.cur, p));
+                    }
+                    walk.cur = p;
+                }
+                CGPathElementType::AddQuadCurveToPoint => {
+                    let p = pt(1);
+                    walk.chords.push((walk.cur, p));
+                    walk.cur = p;
+                }
+                CGPathElementType::AddCurveToPoint => {
+                    let p = pt(2);
+                    walk.chords.push((walk.cur, p));
+                    walk.cur = p;
+                }
+                CGPathElementType::CloseSubpath => {
+                    if (walk.start.0 - walk.cur.0).abs() > 1e-6
+                        || (walk.start.1 - walk.cur.1).abs() > 1e-6
+                    {
+                        walk.chords.push((walk.cur, walk.start));
+                    }
+                    walk.cur = walk.start;
+                }
+                _ => {}
+            }
+        }
+
+        let mut walk = Walk {
+            chords: Vec::new(),
+            start: (0.0, 0.0),
+            cur: (0.0, 0.0),
+        };
+        let cg_path: &CGPath = path;
+        // SAFETY: `walk` outlives this synchronous walk.
+        unsafe {
+            CGPath::apply(
+                Some(cg_path),
+                std::ptr::from_mut(&mut walk).cast(),
+                Some(visit),
+            )
+        };
+        walk.chords
+    }
+
+    #[test]
+    fn partial_square_borders_emit_no_segments_on_zero_width_sides() {
+        let rect = CGRect::new(CGPoint::ZERO, CGSize::new(80.0, 32.0));
+        // `border-x`: left = 1, right = 1, top = 0, bottom = 0.
+        let ring = ring_path(rect, CornerRadii::default(), [0.0, 1.0, 0.0, 1.0]);
+        let chords = path_chords(&ring);
+        assert!(
+            !chords.iter().any(|&(a, b)| {
+                let on_top_or_bottom = (a.1 == 0.0 && b.1 == 0.0) || (a.1 == 32.0 && b.1 == 32.0);
+                on_top_or_bottom && (a.0 - b.0).abs() > 1.0
+            }),
+            "0-width top/bottom sides must not emit span-wide collinear segments: {chords:?}"
+        );
+    }
+
+    #[test]
+    fn open_u_rounded_borders_emit_no_segments_across_the_open_side() {
+        let rect = CGRect::new(CGPoint::ZERO, CGSize::new(100.0, 40.0));
+        for continuous in [false, true] {
+            let r = px(10.0);
+            let cases = [
+                // Open top (`border-x border-b rounded-b`).
+                (
+                    [0.0, 2.0, 2.0, 2.0],
+                    CornerRadii {
+                        top_left: px(0.0),
+                        top_right: px(0.0),
+                        bottom_right: r,
+                        bottom_left: r,
+                        continuous,
+                    },
+                    0usize,
+                ),
+                // Open right (`border-y border-l rounded-l`).
+                (
+                    [2.0, 0.0, 2.0, 2.0],
+                    CornerRadii {
+                        top_left: r,
+                        top_right: px(0.0),
+                        bottom_right: px(0.0),
+                        bottom_left: r,
+                        continuous,
+                    },
+                    1,
+                ),
+                // Open bottom (`border-x border-t rounded-t`).
+                (
+                    [2.0, 2.0, 0.0, 2.0],
+                    CornerRadii {
+                        top_left: r,
+                        top_right: r,
+                        bottom_right: px(0.0),
+                        bottom_left: px(0.0),
+                        continuous,
+                    },
+                    2,
+                ),
+                // Open left (`border-y border-r rounded-r`).
+                (
+                    [2.0, 2.0, 2.0, 0.0],
+                    CornerRadii {
+                        top_left: px(0.0),
+                        top_right: r,
+                        bottom_right: r,
+                        bottom_left: px(0.0),
+                        continuous,
+                    },
+                    3,
+                ),
+            ];
+            for (widths, radii, open_side) in cases {
+                let ring = ring_path(rect, radii, widths);
+                let chords = path_chords(&ring);
+                let crosses_open = chords.iter().any(|&(a, b)| match open_side {
+                    0 => a.1 == 0.0 && b.1 == 0.0 && (a.0 - b.0).abs() > 2.5,
+                    1 => a.0 == 100.0 && b.0 == 100.0 && (a.1 - b.1).abs() > 2.5,
+                    2 => a.1 == 40.0 && b.1 == 40.0 && (a.0 - b.0).abs() > 2.5,
+                    _ => a.0 == 0.0 && b.0 == 0.0 && (a.1 - b.1).abs() > 2.5,
+                });
+                assert!(
+                    !crosses_open,
+                    "open side {open_side} (continuous={continuous}) crossed by segment: {chords:?}"
+                );
+
+                // Verify the filled U-polygon paints the three closed sides and leaves the interior clear.
+                let layer = CALayer::new();
+                layer.setFrame(rect);
+                let shape = CAShapeLayer::new();
+                shape.setFrame(rect);
+                // SAFETY: an immutable Core Animation constant.
+                shape.setFillRule(unsafe { kCAFillRuleEvenOdd });
+                shape.setFillColor(cg_color(Color(0x000000ff)).as_deref());
+                shape.setPath(Some(&ring));
+                layer.addSublayer(&shape);
+                let rgba = pixels(&layer, 100, 40);
+                // Center of the box is clear.
+                assert_eq!(rgba[(20 * 100 + 50) * 4 + 3], 0);
+                // `CGBitmapContext` is unflipped: `CG` `y = 0` is buffer row `h - 1`.
+                let (open_pt, closed_pt) = match open_side {
+                    0 => ((50, 39), (50, 0)),
+                    1 => ((99, 20), (0, 20)),
+                    2 => ((50, 0), (50, 39)),
+                    _ => ((0, 20), (99, 20)),
+                };
+                assert_eq!(
+                    rgba[(open_pt.1 * 100 + open_pt.0) * 4 + 3],
+                    0,
+                    "open side {open_side} midpoint should be transparent"
+                );
+                assert_eq!(
+                    rgba[(closed_pt.1 * 100 + closed_pt.0) * 4 + 3],
+                    255,
+                    "closed side opposite {open_side} midpoint should be opaque"
+                );
+            }
+        }
+    }
 }

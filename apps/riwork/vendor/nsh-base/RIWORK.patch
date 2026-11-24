@@ -1,14 +1,39 @@
 --- a/Cargo.toml
 +++ b/Cargo.toml
-@@ -93,6 +93,8 @@
- version = "1.13"
- 
- [dev-dependencies]
-+nsh-engine = { version = "=0.3.0", default-features = false }
-+nsh-testing = { version = "=0.3.0", default-features = false }
- 
- [lints.rust]
+@@ -188,3 +188,11 @@
  missing_docs = "warn"
+ private_interfaces = "deny"
+ unreachable_pub = "deny"
++
++[dev-dependencies.nsh-engine]
++version = "=0.6.1"
++default-features = false
++
++[dev-dependencies.nsh-testing]
++version = "=0.6.1"
++default-features = false
+--- a/src/button.rs
++++ b/src/button.rs
+@@ -38,6 +38,10 @@
+ /// The events of a [`Button`].
+ #[derive(Debug, Clone, PartialEq, Event)]
+ pub enum ButtonEvent {
++    /// The button took keyboard focus.
++    Focus,
++    /// The button lost keyboard focus.
++    Blur,
+     /// The button was pressed.
+     Press,
+     /// A press went down on it (for the app's own press feedback).
+@@ -69,6 +73,8 @@
+         })
+         .selected_style(props.selected_style)
+         .hit_slop(props.hit_slop)
++        .on_focus(move |_: &()| cx.emit(ButtonEvent::Focus))
++        .on_blur(move |_: &()| cx.emit(ButtonEvent::Blur))
+         .on_press(move |_: &()| cx.emit(ButtonEvent::Press))
+         .on_press_down(move |_: &()| cx.emit(ButtonEvent::PressDown))
+         .on_press_up(move |_: &()| cx.emit(ButtonEvent::PressUp))
 --- a/src/dock/dock_area.rs
 +++ b/src/dock/dock_area.rs
 @@ -262,6 +262,10 @@
@@ -22,17 +47,48 @@
      /// What each panel allows (closable, zoomable, visible), by key.
      #[prop(default)]
      pub panels: Prop<Vec<DockPanelOptions>>,
-@@ -273,6 +277,9 @@
+@@ -273,6 +277,18 @@
      /// the tab, so a row of a title and a close button is a `flex-row` view
      /// of them.
      pub render_tab: Prop<Option<Renderer<DockTab>>>,
++    /// Tabs kept visible before the scrolling session segment, in group order.
++    #[prop(default)]
++    pub fixed_panels: Prop<Vec<PanelId>>,
++    /// Fixed leading chrome, e.g. the native window-controls inset.
++    pub render_tab_bar_prefix: Prop<Option<Renderer<u64>>>,
++    /// Groups at the window's top edge whose unoccupied tab-bar area moves
++    /// the native window. Tabs and interactive controls keep their own input.
++    #[prop(default)]
++    pub draggable_tab_bars: Prop<Vec<u64>>,
 +    /// Fixed controls after a group's horizontally scrolling tabs. The value
 +    /// is its group id; without this renderer the upstream tab bar is unchanged.
 +    pub render_tab_bar_suffix: Prop<Option<Renderer<u64>>>,
      /// What shows where a drag would land, placed over the part of the
      /// group it would take.
      pub render_drop_indicator: Prop<Option<Renderer<DockDropIndicator>>>,
-@@ -1019,6 +1026,7 @@
+@@ -356,6 +372,9 @@
+     reason = "one event per edit, handed on as it is"
+ )]
+ pub enum DockAreaEvent {
++    /// Native drag ownership, including cancellation without a layout edit.
++    #[args(dragging)]
++    DragChange(bool),
+     /// The layout changed (a drag, a selection, a resize, a dock opened or
+     /// closed, a method of the ref): the whole new layout, every id in it.
+     /// Pass it back as `layout` (and save it, debounced: it comes on every
+@@ -715,8 +734,9 @@
+         }
+     }
+ 
+-    /// Reports `event` to whoever renders the area.
+-    fn emit(self, event: DockAreaEvent) {
++    /// Reports `event` to whoever renders the area. Crate-visible for the tab drag's
++    /// `DragChange` (`tab_group.rs`).
++    pub(crate) fn emit(self, event: DockAreaEvent) {
+         // Called outside the stored value's borrow: a listener may reach the
+         // area again.
+         let emit = self.emit.get();
+@@ -1150,6 +1170,7 @@
      group.__element().__props_mut().handle_thumb_style = a.props.handle_thumb_style;
      let group = group
          .axis(move || axis.get())
@@ -40,16 +96,87 @@
          .handle_class(a.props.handle_class)
          .handle_thumb_class(a.props.handle_thumb_class)
          .handle_accessibility_label(a.props.handle_accessibility_label)
+@@ -1298,13 +1319,15 @@
+                             end_dock_drag(a, placement, drag.from + *offset * sign);
+                         })
+                         .child(
+-                            // The indicator is the band's line, 1 point
+-                            // across (the band stretches it along): the
+-                            // app's class colors it, or makes it thicker.
++                            // The indicator is a full-length one-point line.
++                            // Its geometry does not depend on having content;
++                            // the app's class or style only needs to color it.
+                             view()
++                                .flex_none()
++                                .pointer_events(PointerEvents::None)
+                                 .map(|v| match axis {
+-                                    Axis::Horizontal => v.w(HANDLE_SIZE),
+-                                    Axis::Vertical => v.h(HANDLE_SIZE),
++                                    Axis::Horizontal => v.w(HANDLE_SIZE).h_full(),
++                                    Axis::Vertical => v.h(HANDLE_SIZE).w_full(),
+                                 })
+                                 .app_class(a.props.handle_class)
+                                 .inline_style(a.props.handle_style),
+--- a/src/dock/drag.rs
++++ b/src/dock/drag.rs
+@@ -22,8 +22,16 @@
+     /// The half of `bounds` (or all of it, for `None`) a drop at
+     /// `placement` takes, relative to `bounds`' origin.
+     pub fn for_placement(bounds: Bounds<Points>, placement: Option<Placement>) -> Self {
+-        let half_width = bounds.size.width * 0.5;
+-        let half_height = bounds.size.height * 0.5;
++        Self::with_divider(bounds, placement, px(0.0))
++    }
++
++    /// The destination's actual half after reserving the split's divider gap.
++    /// Whole-group/tab-bar destinations do not reserve a divider.
++    pub(crate) fn with_divider(bounds: Bounds<Points>, placement: Option<Placement>, divider: Points) -> Self {
++        let horizontal_gap = divider.max(px(0.0)).min(bounds.size.width);
++        let vertical_gap = divider.max(px(0.0)).min(bounds.size.height);
++        let half_width = (bounds.size.width - horizontal_gap) * 0.5;
++        let half_height = (bounds.size.height - vertical_gap) * 0.5;
+ 
+         match placement {
+             Some(Placement::Left) => Self {
+@@ -31,7 +39,7 @@
+                 size: size(half_width, bounds.size.height),
+             },
+             Some(Placement::Right) => Self {
+-                origin: point(half_width, px(0.)),
++                origin: point(half_width + horizontal_gap, px(0.)),
+                 size: size(half_width, bounds.size.height),
+             },
+             Some(Placement::Top) => Self {
+@@ -39,7 +47,7 @@
+                 size: size(bounds.size.width, half_height),
+             },
+             Some(Placement::Bottom) => Self {
+-                origin: point(px(0.), half_height),
++                origin: point(px(0.), half_height + vertical_gap),
+                 size: size(bounds.size.width, half_height),
+             },
+             None => Self {
 --- a/src/dock/tab_group.rs
 +++ b/src/dock/tab_group.rs
-@@ -102,6 +102,23 @@
+@@ -42,7 +42,7 @@
+ 
+ use super::{
+     area::Group,
+-    dock_area::{AreaCx, DockDropIndicator, DockPanel, DockTab, DropAt, GroupRefs, TabDrag, Zone},
++    dock_area::{AreaCx, DockAreaEvent, DockDropIndicator, DockPanel, DockTab, DropAt, GroupRefs, TabDrag, Zone},
+     drag::{DropPlaceholderBounds, split_placement_at},
+     layout::{InsertTarget, NodeId, PanelId},
+ };
+@@ -102,6 +102,26 @@
      };
      a.register(refs.clone());
      let tab_refs = refs.tabs.clone();
-+    let tab_items = move || {
++    let tab_items = move |fixed: Option<bool>| {
 +        let tab_refs = tab_refs.clone();
 +        each(
-+            move || tabs.get(),
++            move || tabs.get().into_iter().filter(|panel| {
++                fixed.is_none_or(|fixed| a.props.fixed_panels.get().contains(panel) == fixed)
++            }).collect::<Vec<_>>(),
 +            |panel: &PanelId| panel.clone(),
 +            move |panel, _| {
 +                let id = panel.get_untracked();
@@ -62,11 +189,16 @@
 +        )
 +    };
 +    let scrolling_tabs = tab_items.clone();
++    let fixed_tabs = tab_items.clone();
 +    let scrolling_refs = refs.tabs.clone();
      let content = refs.content.expect("a group's content");
      view()
          .flex_1()
-@@ -116,18 +133,105 @@
+@@ -113,21 +133,115 @@
+         .child(
+             view()
+                 .role(AccessibilityRole::Tablist)
++                .window_drag(move || a.props.draggable_tab_bars.get().contains(&node.as_u64()))
                  .element_ref(&refs.bar)
                  .app_class(a.props.tab_bar_class)
                  .inline_style(a.props.tab_bar_style)
@@ -94,7 +226,7 @@
 +                            let scroll_offset = offset.clone();
 +                            let reveal_refs = scrolling_refs.clone();
 +                            effect(move || {
-+                                let selected = shown.get();
++                                let selected = shown.get().filter(|panel| !a.props.fixed_panels.get().contains(panel));
 +                                let ticket = revision.get().wrapping_add(1);
 +                                revision.set(ticket);
 +                                let _ = tabs.get();
@@ -147,6 +279,12 @@
 +                                .flex_row()
 +                                .flex_1()
 +                                .min_w(px(0.0))
++                                .child(dynamic(move || {
++                                    a.props.render_tab_bar_prefix.get().map(|render| {
++                                        render.render(node.as_u64().to_string(), node.as_u64()).flex_none()
++                                    })
++                                }))
++                                .child(view().flex_row().flex_none().child(fixed_tabs(Some(true))))
 +                                .child(
 +                                    scroll()
 +                                        .element_ref(&scroll_ref)
@@ -167,7 +305,7 @@
 +                                                .on_layout(move |frame: &Bounds<Points>| {
 +                                                    content_size.set(frame.size)
 +                                                })
-+                                                .child(scrolling_tabs()),
++                                                .child(scrolling_tabs(Some(false))),
 +                                        ),
 +                                )
 +                                .child(dynamic(move || {
@@ -179,70 +317,223 @@
 +                                }))
 +                        },
 +                    )
-+                    .otherwise(tab_items),
++                    .otherwise(move || tab_items(None)),
 +                ),
          )
          .child(
              view()
+@@ -196,9 +310,9 @@
+ /// faint as the terminal's bands go.
+ const DROP_WASH: f32 = 0.12;
+ 
+-/// The drop indicator: while a drag would land on a group, over the part
+-/// of its content frame the panel would take (all of it to merge, a half
+-/// to split). It is an overlay in the root view, under the drag preview
++/// The drop indicator: the complete destination pane when splitting (its
++/// header included), the content frame when merging, or the tab insertion
++/// line when reordering. It is an overlay in the root view, under the drag preview
+ /// (mounted again after it, `dock_area.rs` `drag_preview`), placed with
+ /// the frame the drag measured, so it is drawn above everything in the
+ /// area: the handles' lines, which lie over the edges of the groups beside
+@@ -223,7 +337,7 @@
+         move || {
+             let place = move || {
+                 target.get().map(|t| {
+-                    let p = DropPlaceholderBounds::for_placement(t.content, t.side);
++                    let p = DropPlaceholderBounds::with_divider(t.content, t.side, a.props.divider_size.get());
+                     Bounds {
+                         origin: t.content.origin + p.origin(),
+                         size: p.size(),
+@@ -234,9 +348,12 @@
+             // moves to.
+             let shown = Cell::new(None);
+             effect(move || {
+-                let now = place();
++                let now = place().map(|bounds| (bounds, target.get().is_some_and(|t| t.index.is_some())));
+                 let before = shown.replace(now);
+-                if before != now && !terminal {
++                // A tab insertion line snaps between slots. Morphing its solid
++                // fill from a half-pane rectangle would briefly obscure content.
++                let bar = now.is_some_and(|(_, bar)| bar) || before.is_some_and(|(_, bar)| bar);
++                if before != now && !bar && !terminal {
+                     animate_indicator(before.is_none());
+                 }
+             });
+@@ -329,6 +446,7 @@
+     let dragged = panel.clone();
+     view()
+         .role(AccessibilityRole::Tab)
++        .window_drag(false)
+         .accessibility_state(move || AccessibilityState {
+             selected: selected(),
+             ..AccessibilityState::default()
+@@ -401,6 +519,47 @@
+     (index, others.into_iter().map(|(p, _)| p.clone()).collect())
+ }
+ 
++/// Splits divide the whole pane, including its tab bar. Measuring only the
++/// content made a horizontal split's midpoint one half-header too low.
++fn pane_bounds(zone: &Zone, content: Bounds<Points>) -> Bounds<Points> {
++    let Some(bar) = zone.bar else { return content };
++    let left = content.left().min(bar.left());
++    let top = content.top().min(bar.top());
++    Bounds {
++        origin: Point::new(left, top),
++        size: nsh_core::Size::new(content.right().max(bar.right()) - left, content.bottom().max(bar.bottom()) - top),
++    }
++}
++
++/// The same slot calculation used by the drop: a small line between the
++/// measured visible tabs, clipped to the bar so scrolled tabs cannot put it
++/// outside the pane. Compact bars use the same calculation along their axis.
++fn insertion_bounds(zone: &Zone, panel: &PanelId, at: Point<Points>) -> Option<Bounds<Points>> {
++    let bar = zone.bar?;
++    let across = bar.size.height > bar.size.width;
++    let mut tabs: Vec<_> = zone.tabs.iter().filter(|(id, _)| id != panel).collect();
++    let center = |bounds: &Bounds<Points>| if across { bounds.center().y } else { bounds.center().x };
++    tabs.sort_by(|a, b| center(&a.1).0.total_cmp(&center(&b.1).0));
++    let pointer = if across { at.y } else { at.x };
++    let next = tabs.iter().find(|(_, bounds)| center(bounds) >= pointer);
++    let position = next.map(|(_, bounds)| if across { bounds.top() } else { bounds.left() })
++        .or_else(|| tabs.last().map(|(_, bounds)| if across { bounds.bottom() } else { bounds.right() }))
++        .unwrap_or(if across { bar.top() } else { bar.left() });
++    let thickness = px(2.0);
++    let inset = px(3.0);
++    Some(if across {
++        Bounds {
++            origin: Point::new(bar.left() + inset, position.max(bar.top()).min((bar.bottom() - thickness).max(bar.top()))),
++            size: nsh_core::Size::new((bar.size.width - inset * 2.0).max(px(0.0)), thickness),
++        }
++    } else {
++        Bounds {
++            origin: Point::new(position.max(bar.left()).min((bar.right() - thickness).max(bar.left())), bar.top() + inset),
++            size: nsh_core::Size::new(thickness, (bar.size.height - inset * 2.0).max(px(0.0))),
++        }
++    })
++}
++
+ impl AreaCx {
+     /// Registers the views of a group for drags to measure, while the view
+     /// making them lives.
+@@ -420,6 +579,7 @@
+ 
+     /// A tab's drag began at `pointer`: the groups are measured.
+     pub(crate) fn start_drag(self, panel: PanelId, source: Option<NodeId>, pointer: Point<Points>) {
++        self.emit(DockAreaEvent::DragChange(true));
+         self.drag.set(Some(TabDrag {
+             panel,
+             source,
+@@ -499,8 +659,10 @@
+         let Some(drag) = self.drag.get_untracked() else {
+             return;
+         };
+-        self.cancel_drag();
++        self.drag.set(None);
++        self.zones.replace(Vec::new());
+         let Some(at) = drag.target else {
++            self.emit(DockAreaEvent::DragChange(false));
+             return;
+         };
+         let target = match at.side {
+@@ -519,12 +681,15 @@
+             self.current.set(Some(at.group));
+         }
+         self.edit(|area| area.move_panel(drag.panel, target));
++        self.emit(DockAreaEvent::DragChange(false));
+     }
+ 
+     /// The drag ended without a drop.
+     pub(crate) fn cancel_drag(self) {
++        let was_dragging = self.drag.get_untracked().is_some();
+         self.drag.set(None);
+         self.zones.replace(Vec::new());
++        if was_dragging { self.emit(DockAreaEvent::DragChange(false)); }
+     }
+ 
+     /// Where `drag` would land with the pointer at `at`.
+@@ -558,7 +723,7 @@
+                 group,
+                 side,
+                 index: None,
+-                content,
++                content: if side.is_some() { pane_bounds(zone, content) } else { content },
+             })
+         })
+     }
+@@ -578,7 +743,7 @@
+                     group,
+                     side: None,
+                     index: Some(index),
+-                    content: zone.content.unwrap_or(bar),
++                    content: insertion_bounds(zone, &drag.panel, at).unwrap_or(bar),
+                 })
+             }
+             None => {
 --- a/src/resizable/panel.rs
 +++ b/src/resizable/panel.rs
 @@ -30,6 +30,10 @@
      /// No drags: the handles stay where they are (a locked layout).
      #[prop(default)]
      pub disabled: Prop<bool>,
-+    /// Reserved gap between visible panels and the indicator's thickness.
-+    /// Zero keeps the upstream one-point overlay and consumes no layout space.
++    /// Reserved gap between visible panels, independent of the one-point
++    /// indicator and its wider drag target. Zero consumes no layout space.
 +    #[prop(default)]
 +    pub divider_size: Prop<Points>,
      /// The Tailwind classes of each handle's indicator, the part the app
      /// draws, centered on the boundary between two panels in the handle's
      /// band, along the whole boundary and 1 point across unless the
-@@ -121,6 +125,7 @@
-     };
+@@ -140,8 +144,9 @@
      view()
          .size_full()
-+        .gap(move || props.divider_size.get().max(Points::ZERO))
-         .style_with(move |s| match props.axis.get() {
-             Axis::Horizontal => s.flex_row(),
-             Axis::Vertical => s.flex_col(),
-@@ -190,9 +195,9 @@
-                     // The line by default, so one class draws it on either
-                     // axis (`bg-border`); the app's classes win.
-                     view()
--                        .map(|v| match axis {
--                            Axis::Horizontal => v.w(HANDLE_SIZE),
--                            Axis::Vertical => v.h(HANDLE_SIZE),
-+                        .style_with(move |v| match axis {
-+                            Axis::Horizontal => v.w(props.divider_size.get().max(HANDLE_SIZE)),
-+                            Axis::Vertical => v.h(props.divider_size.get().max(HANDLE_SIZE)),
-                         })
-                         .app_class(props.handle_class)
-                         .inline_style(props.handle_style)
---- a/src/button.rs
-+++ b/src/button.rs
-@@ -29,6 +29,10 @@
- /// The events of a [`Button`].
- #[derive(Debug, Clone, PartialEq, Event)]
- pub enum ButtonEvent {
-+    /// The button took keyboard focus.
-+    Focus,
-+    /// The button lost keyboard focus.
-+    Blur,
-     /// The button was pressed.
-     Press,
-     /// A press went down on it (for the app's own press feedback).
-@@ -54,6 +58,8 @@
-             ..AccessibilityState::default()
-         })
-         .selected_style(props.selected_style)
-+        .on_focus(move |_: &()| cx.emit(ButtonEvent::Focus))
-+        .on_blur(move |_: &()| cx.emit(ButtonEvent::Blur))
-         .on_press(move |_: &()| cx.emit(ButtonEvent::Press))
-         .on_press_down(move |_: &()| cx.emit(ButtonEvent::PressDown))
-         .on_press_up(move |_: &()| cx.emit(ButtonEvent::PressUp))
+         .style_with(move |s| match (props.axis.get(), terminal) {
+-            (Axis::Horizontal, false) => s.flex_row(),
+-            (Axis::Vertical, false) => s.flex_col(),
++            // RiWork patch: `dividerSize` reserves a real gap between the panels.
++            (Axis::Horizontal, false) => s.flex_row().gap(props.divider_size.get().max(Points::ZERO)),
++            (Axis::Vertical, false) => s.flex_col().gap(props.divider_size.get().max(Points::ZERO)),
+             // A terminal keeps no percentage height for a box of content:
+             // the group grows to fill its parent instead.
+             (Axis::Horizontal, true) => s.flex_row().flex_grow(1.0).gap(column),
+@@ -214,12 +219,16 @@
+                 // (`terminal_band`), the app's line and thumb aside.
+                 .when(!terminal, |v| {
+                     v.child(
+-                        // The line by default, so one class draws it on either
+-                        // axis (`bg-border`); the app's classes win.
++                        // A full-length hairline inside the wider drag band. Give
++                        // the otherwise empty indicator an explicit cross-axis
++                        // extent; its color alone must be enough to paint it.
++                        // The reserved layout gap does not thicken the line.
+                         view()
++                            .flex_none()
++                            .pointer_events(PointerEvents::None)
+                             .map(|v| match axis {
+-                                Axis::Horizontal => v.w(HANDLE_SIZE),
+-                                Axis::Vertical => v.h(HANDLE_SIZE),
++                                Axis::Horizontal => v.w(HANDLE_SIZE).h_full(),
++                                Axis::Vertical => v.h(HANDLE_SIZE).w_full(),
+                             })
+                             .app_class(props.handle_class)
+                             .inline_style(props.handle_style)
+@@ -698,7 +707,14 @@
+             .map(|index| {
+                 let gap = start(&frames[index + 1]) - end(&frames[index]);
+                 at += sizes[index];
+-                let boundary = at + gap / 2.0;
++                // `at` positions the leading edge of the one-point line.
++                // Center that line in a real gap; without a gap keep the
++                // upstream overlay on the following panel's leading pixel.
++                let boundary = if gap > Points::ZERO {
++                    at + (gap - HANDLE_SIZE) / 2.0
++                } else {
++                    at
++                };
+                 at += gap;
+                 HandleSpot {
+                     axis,
 --- a/src/switch.rs
 +++ b/src/switch.rs
-@@ -40,6 +40,10 @@
+@@ -55,6 +55,10 @@
  /// The events of a [`Switch`].
  #[derive(Debug, Clone, PartialEq, Event)]
  pub enum SwitchEvent {
@@ -253,12 +544,12 @@
      /// The switch was pressed (a tap, a click, Space or Return): the value
      /// it asks for, the opposite of `checked`.
      #[args(checked)]
-@@ -75,6 +79,8 @@
-             ..AccessibilityState::default()
+@@ -101,6 +105,8 @@
          })
          .checked_style(props.checked_style)
+         .hit_slop(props.hit_slop)
 +        .on_focus(move |_: &()| cx.emit(SwitchEvent::Focus))
 +        .on_blur(move |_: &()| cx.emit(SwitchEvent::Blur))
          .on_press(move |_: &()| cx.emit(SwitchEvent::Change(!props.checked.get_untracked())))
-         .child(
-             part()
+         .when(terminal, |v| v.flex_row())
+         .child(match terminal {

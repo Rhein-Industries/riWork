@@ -1,4 +1,4 @@
-import { Scroll, Text, View, effect, signal, type YNode } from "nsh";
+import { Scroll, Text, View, effect, signal, type ViewRef } from "nsh";
 import { Input } from "nsh/base";
 import { Hosts } from "riwork/native";
 import { Icon } from "../Icon";
@@ -16,7 +16,7 @@ export function Agents(props: { visible: () => boolean; theme: () => InterfaceTh
   const query = signal("");
   const focused = signal(false);
   const limits = signal<Record<string,number>>({});
-  let search: YNode | undefined;
+  let search: ViewRef | undefined;
   props.onSearch?.({focus: () => search?.focus()});
   effect(() => {
     if (!props.visible()) return;
@@ -55,10 +55,10 @@ export function Agents(props: { visible: () => boolean; theme: () => InterfaceTh
         style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "flex-start", gap: space(8, scale()), paddingHorizontal: space(6, scale()), paddingVertical: space(6, scale()), borderRadius: space(8, scale()) }}>
         <View style={{ paddingTop: 1 }}><Icon name={session().kind === "chat" ? "chat" : "terminal"} size={13 * scale()} color={palette().muted} /></View>
         <View style={{ flex: 1, minWidth: 0, gap: space(4, scale()) }}>
-          <Text numberOfLines={1} style={{ ...font(11), fontWeight: session().unseen ? "600" : "400" }}>{session().title}</Text>
+          <Text style={{ ...font(11), fontWeight: session().unseen ? "600" : "400", numberOfLines: 1 }}>{session().title}</Text>
           <View style={{ flexDirection: "row", alignItems: "center", gap: space(6, scale()), minWidth: 0 }}>
             <StatusPill theme={props.theme} tone={state(session()).tone} label={state(session()).label} inline={true} />
-            {meta() !== "" && <Text numberOfLines={1} style={{ ...font(10, palette().muted), flexShrink: 1, minWidth: 0 }}>{meta()}</Text>}
+            {meta() !== "" && <Text style={{ ...font(10, palette().muted), flexShrink: 1, minWidth: 0, numberOfLines: 1 }}>{meta()}</Text>}
           </View>
         </View>
       </View>
@@ -67,14 +67,14 @@ export function Agents(props: { visible: () => boolean; theme: () => InterfaceTh
   }
   return <View testID="agents-overview" style={{ flex: 1, minHeight: 0, backgroundColor: palette().panel }}>
     <View style={{ minHeight: space(PANEL.header, scale()), paddingHorizontal: space(PANEL.inset, scale()), justifyContent: "center", gap: 1 }}>
-      <Text numberOfLines={1} style={{ ...font(13), fontWeight: "600" }}>Agents</Text>
-      <Text testID="agents-count" numberOfLines={1} style={font(10, palette().muted)}>{snapshot().hosts.length === 0 ? "Reading hosts…"
+      <Text style={{ ...font(13), fontWeight: "600", numberOfLines: 1 }}>Agents</Text>
+      <Text testID="agents-count" style={{ ...font(10, palette().muted), numberOfLines: 1 }}>{snapshot().hosts.length === 0 ? "Reading hosts…"
         : `${shown() === all().length ? all().length : `${shown()} of ${all().length}`} ${all().length === 1 ? "session" : "sessions"} · ${snapshot().hosts.length} ${snapshot().hosts.length === 1 ? "host" : "hosts"}`}</Text>
     </View>
     <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space(8, scale()), paddingHorizontal: space(12, scale()), paddingBottom: space(8, scale()) }}>
       <View style={{ ...searchBox(props.theme, focused()).style, flexGrow: 1, flexShrink: 1, flexBasis: space(100, scale()) }} hoverStyle={searchBox(props.theme, focused()).hoverStyle} onPress={() => search?.focus()}>
         <Icon name="search" size={13 * scale()} color={palette().muted} />
-        <Input testID="agents-search" ref={node => {search=node;}} accessibilityLabel="Search hosts and agents" placeholder="Search" value={query()} onChange={value => query.set(value)}
+        <Input testID="agents-search" ref={node => {search=node;}} accessibilityLabel="Search hosts and agents" placeholder="Search" value={query()} onChange={({ value }) => query.set(value)}
           onFocus={() => focused.set(true)} onBlur={() => focused.set(false)}
           style={{ flex: 1, minWidth: 0, padding: 0, backgroundColor: "transparent", ...font(11) }} />
       </View>
@@ -85,7 +85,7 @@ export function Agents(props: { visible: () => boolean; theme: () => InterfaceTh
       {snapshot().error && <Text role="alert" style={{ ...font(11,palette().danger), paddingHorizontal: space(6, scale()) }}>{snapshot().error}</Text>}
       <Each of={snapshot().hosts} key={host => host.id}>{host => <View testID={`agents-host-${host().connectionId ?? "local"}`} style={{ gap: 2 }}>
         <View style={{ flexDirection: "row", gap: 8, alignItems: "center", paddingHorizontal: space(6, scale()), paddingVertical: space(4, scale()) }}>
-          <Text numberOfLines={1} style={{ ...font(10, palette().muted), fontWeight: "600", flexShrink: 1 }}>{host().label}</Text>
+          <Text style={{ ...font(10, palette().muted), fontWeight: "600", flexShrink: 1, numberOfLines: 1 }}>{host().label}</Text>
           <StatusPill theme={props.theme} tone={host().connection === "online" ? host().freshness === "stale" ? "needs" : "done" : host().connection === "blocked" ? "needs" : "neutral"} label={connectionText(host())} inline={true} />
         </View>
         {host().error && <Text style={{ ...font(10,palette().danger), paddingHorizontal: space(6, scale()) }}>{host().error}</Text>}

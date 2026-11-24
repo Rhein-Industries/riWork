@@ -7,8 +7,8 @@
 //!
 //! ```tsx
 //! <ResizablePanelGroup axis="horizontal" handleClass="w-px bg-border group-active:bg-primary"
-//!   onResize={sizes => save(sizes)}>
-//!   <ResizablePanel size={sidebar()} minSize={160} maxSize={480} onResize={setSidebar}>…</ResizablePanel>
+//!   onResize={({ sizes }) => save(sizes)}>
+//!   <ResizablePanel size={sidebar()} minSize={160} maxSize={480} onResize={({ size }) => setSidebar(size)}>…</ResizablePanel>
 //!   <ResizablePanel>…</ResizablePanel>
 //! </ResizablePanelGroup>
 //! ```
@@ -51,7 +51,9 @@
 //!   is never written into what a panel wants, and a panel shown again
 //!   comes back at the size it wanted. Nothing of this reports `onResize`.
 //! - **Handles are the group's.** One per boundary between two visible
-//!   panels, each an absolutely placed band over the boundary (9 points
+//!   panels (none in a group a dock area makes for `SplitView`'s columns,
+//!   which the user does not resize: `ShowHandles`), each an absolutely
+//!   placed band over the boundary (9 points
 //!   thick, the boundary's line in its middle; on touch screens its hit
 //!   slop adds 10 points on either side), with the resize cursor and the
 //!   role `adjustable`, a `group` whose child, the indicator, is the app's
@@ -78,8 +80,8 @@
 //!   there is one, keeps none: it takes the rest, which is what the drag
 //!   gives it). Nothing reaches JS
 //!   until the drag ends: then the group reports every visible panel's
-//!   size (`onResize(sizes)`), and each panel whose size changed its own
-//!   (`onResize(size)`), which the app passes back as `size` to keep (a
+//!   size (`onResize({ sizes })`), and each panel whose size changed its own
+//!   (`onResize({ size })`), which the app passes back as `size` to keep (a
 //!   group made again starts from it). Without that, the group keeps the
 //!   sizes the user gave the panels while it lives.
 //! - **[`ResizeHandle`]** is the same band on its own, for a container's
@@ -107,6 +109,9 @@ mod state;
 use std::ops::Range;
 
 use nsh_core::geometry::{Axis, Points};
+/// Whether a group places handles: off for a dock area's splits that the
+/// user does not resize (`SplitView`'s columns).
+pub(crate) use panel::ShowHandles;
 pub use panel::{
     ResizablePanel, ResizablePanelElement, ResizablePanelEvent, ResizablePanelGroup,
     ResizablePanelGroupElement, ResizablePanelGroupEvent, ResizablePanelGroupProps,
@@ -114,7 +119,7 @@ pub use panel::{
 };
 /// The line a handle's band is centered on, 1 point: the indicator's
 /// default thickness, for the dock's edge handles too.
-pub(crate) use resize_handle::HANDLE_SIZE;
+pub(crate) use resize_handle::{HANDLE_SIZE, PointerOnly};
 pub use resize_handle::{
     HandleEdge, ResizeHandle, ResizeHandleContext, ResizeHandleElement, ResizeHandleEvent,
     ResizeHandleProps, ResizeHandleState, resize_handle,

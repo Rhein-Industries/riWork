@@ -30,11 +30,14 @@ use std::rc::Rc;
 
 pub(crate) use nsh_core::transition::Live;
 use nsh_core::{
-    Bounds, LayoutAnimation, Matrix, Points, TransformKind, ViewKind, ViewStyle,
+    AttributedText, Bounds, LayoutAnimation, Matrix, Points, TransformKind, ViewKind, ViewStyle,
     transition::{self, Extra},
 };
 
-use crate::{surface::Surface, view::NshView};
+use crate::{
+    surface::{Next, Surface},
+    view::NshView,
+};
 
 /// `E · m`: `extra` (scale, then rotation, then the shift), then `m` (row
 /// vectors, in the view's local space about its transform origin).
@@ -96,7 +99,24 @@ fn animate(surface: &Rc<Surface>, view: &NshView, f: impl FnOnce(&mut Live)) {
     };
     if start {
         let view = view.clone();
-        surface.add_frame_callback(move |_, now| tick(&view, now * 1000.0));
+        // Whether only keyframes repeating forever are left, which have no
+        // deadline: the agent of `nsh test` does not wait for them, or no
+        // step would end.
+        let mut looping = false;
+        surface.add_frame_callback(move |surface, now| {
+            let next = tick(&view, now * 1000.0);
+            if matches!(next, Next::Frame) != looping {
+                looping = !looping;
+                surface.cosmetic_frame(looping);
+            }
+            // A keyframe animation alone on the view may need fewer frames.
+            if !matches!(next, Next::Done)
+                && let Some(hz) = view.state().live.as_ref().and_then(|l| l.frame_rate())
+            {
+                surface.cap_frame(hz);
+            }
+            next
+        });
     }
 }
 
@@ -193,6 +213,23 @@ pub(crate) fn style_changed(surface: &Rc<Surface>, view: &NshView, old: &ViewSty
     animate(surface, view, |live| live.restyle(restyle));
 }
 
+/// `view`'s text changed from `old` (the new one is in its state): its
+/// color transitions as its style's `transition` says, drawn over the new
+/// runs ([`Live::text_color`]) rather than typeset on every frame.
+pub(crate) fn text_changed(
+    surface: &Rc<Surface>,
+    view: &NshView,
+    old: &AttributedText,
+    text: &AttributedText,
+) {
+    let recolor = transition::recolor(old, text, &view.state().style, reduce_motion(surface));
+    if recolor.starts() {
+        animate(surface, view, |live| live.recolor(recolor));
+    } else if let Some(live) = view.state_mut().live.as_deref_mut() {
+        live.recolor(recolor);
+    }
+}
+
 /// True if an ancestor of `view` is animating out (and takes `view` with
 /// it).
 fn ancestor_dying(view: &NshView) -> bool {
@@ -206,9 +243,9 @@ fn ancestor_dying(view: &NshView) -> bool {
     false
 }
 
-/// One display frame (`now` in ms) of `view`'s animations: whether it
-/// wants the next one.
-fn tick(view: &NshView, now: f64) -> bool {
+/// One display frame (`now` in ms) of `view`'s animations: what it has
+/// left, its next end in seconds.
+fn tick(view: &NshView, now: f64) -> Next {
     // A view deleted inside a deleted subtree leaves with its ancestor
     // instead of fading on its own (deletions arrive in any order, so this
     // is decided once the batch is applied).
@@ -219,26 +256,32 @@ fn tick(view: &NshView, now: f64) -> bool {
         let mut s = view.state_mut();
         let s = &mut *s;
         let Some(mut live) = s.live.take() else {
-            return false;
+            return Next::Done;
         };
         if inherited {
             live.leave_with_ancestor();
         }
         let step = live.step(now, &mut s.frame, &mut s.style);
+        let deadline = live.deadline(now);
         if !live.idle() {
             s.live = Some(live);
         }
-        step
+        (step, deadline)
     };
+    let (step, deadline) = step;
 
     if step.removed {
         view.unparent();
-        return false;
+        return Next::Done;
     }
     view.moved();
     if step.restyled {
         // Text and canvas drawings may use the style (tint).
         view.redraw();
     }
-    !step.finished
+    match deadline {
+        _ if step.finished => Next::Done,
+        Some(ms) => Next::At(ms / 1000.0),
+        None => Next::Frame,
+    }
 }

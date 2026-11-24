@@ -1,7 +1,8 @@
-import { Scroll, Text, View as HostView, cleanup, computed, effect, keymap, signal, untracked, type YNode } from "nsh";
+import { Scroll, Text, View as HostView, cleanup, computed, effect, keymap, signal, untracked, type ViewRef } from "nsh";
 import { Button, Input, View, settingsFocusScope } from "../SettingsFocus";
 import { DEFAULT_THEME, space, type InterfaceTheme } from "../appearance";
 import { Icon } from "../Icon";
+import { focusView } from "../keyboard";
 import { taskStatusLabel } from "../panel_model";
 import {
   EMPTY_REMOTE, checkPairingLink, filteredFolders, linkPresentation,
@@ -174,7 +175,7 @@ function RemoteError(props: { controller: RemoteController; text: string }) {
   const notice = () => remoteErrorNotice(props.text);
   return <View testID="remote-hosts-error" accessibilityLabel={props.text} style={{ gap: 4 }}>
     <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-      <Text numberOfLines={2} style={{ ...font(c, 10, c.theme().palette.gold), flex: 1, minWidth: 0 }}>{notice().summary}</Text>
+      <Text style={{ ...font(c, 10, c.theme().palette.gold), flex: 1, minWidth: 0, numberOfLines: 2 }}>{notice().summary}</Text>
       {notice().detail && action(c, "remote-hosts-error-details", open() ? "Hide details" : "Details", () => open.set(!open()))}
     </View>
     {open() && notice().detail && <Text testID="remote-hosts-error-detail" style={font(c, 10, c.theme().palette.muted)}>{notice().detail}</Text>}
@@ -187,9 +188,9 @@ export function RemoteSettings(props: { controller: RemoteController }) {
   const c = props.controller;
   // Made again when the form changes (add ↔ pair), not as it is filled in.
   const form = computed(() => c.prompt()?.kind === "project" ? null : c.prompt()?.kind ?? null);
-  let opened: YNode | undefined;
+  let opened: ViewRef | undefined;
   function opener(id: string, label: string, kind: RemotePromptKind) {
-    let node: YNode | undefined;
+    let node: ViewRef | undefined;
     return <Button testID={id} accessibilityLabel={label} selected={samePrompt(c.prompt(), kind)} disabled={c.pending()} ref={(value) => { node = value; }}
       onPress={() => { opened = node; void c.open(kind); }} style={{ paddingHorizontal: 8, paddingVertical: 4 }}>
       <Text style={font(c, 10, samePrompt(c.prompt(), kind) ? c.theme().palette.cyan : undefined)}>{label}</Text>
@@ -230,14 +231,14 @@ export function RemoteProjects(props: {
       const collapsed = () => !props.query?.().trim() && props.collapsed?.().has(key);
       const kind = (): RemotePromptKind => ({ kind: "project", host, label: folder().label });
       const form = computed(() => samePrompt(c.prompt(), kind())), online = computed(() => folder().link === "online");
-      let add: YNode | undefined;
+      let add: ViewRef | undefined;
       return <View testID={`remote-folder-${host}`} style={{ gap: 2 }}>
         <View tooltip="A paired Mac. Its projects open here like local ones." style={{ flexDirection: "row", alignItems: "center", gap: 3, paddingHorizontal: space(6, c.theme().scale), height: space(30, c.theme().scale) }}>
           <View testID={`remote-folder-toggle-${host}`} role="button" focusable={true} accessibilityLabel={folder().label} accessibilityState={{ expanded: !collapsed() }} onPress={() => props.onToggleFolder?.(key)}
             style={{ flex: 1, minWidth: 0, height: "100%", flexDirection: "row", alignItems: "center", gap: space(6, c.theme().scale) }}>
             <Icon name={collapsed() ? "right" : "down"} size={10 * c.theme().scale} color={c.theme().palette.muted} />
             <Text testID={`remote-folder-status-${host}`} tooltip={linkPresentation(folder().link).text} accessibilityLabel={linkPresentation(folder().link).text} style={font(c, 10, c.theme().palette[linkPresentation(folder().link).tone])}>{linkPresentation(folder().link).dot}</Text>
-            <Text numberOfLines={1} style={{ ...font(c, 10, c.theme().palette.muted), fontWeight: "600", flex: 1, minWidth: 0 }}>{folder().label}</Text>
+            <Text style={{ ...font(c, 10, c.theme().palette.muted), fontWeight: "600", flex: 1, minWidth: 0, numberOfLines: 1 }}>{folder().label}</Text>
             {folder().creating && <Text style={font(c, 9, c.theme().palette.muted)}>creating…</Text>}
             <Text style={font(c, 9, c.theme().palette.muted)}>{String(folder().count).padStart(2, "0")}</Text>
           </View>
@@ -253,7 +254,7 @@ export function RemoteProjects(props: {
         {!collapsed() && folder().projects.map((project) => <Button testID={`remote-project-${project.key}`} accessibilityLabel={`${project.name} on ${folder().label}`}
           selected={props.selected?.() === project.key} onPress={() => props.onSelectProject(project.key)}
           style={{ opacity: project.dimmed ? 0.5 : 1, marginLeft: space(16, c.theme().scale), paddingHorizontal: space(8, c.theme().scale), paddingVertical: space(8, c.theme().scale), gap: 3, borderRadius: space(5, c.theme().scale), backgroundColor: props.selected?.() === project.key ? c.theme().palette.panelActive : "transparent" }} hoverStyle={{ backgroundColor: c.theme().palette.panelActive }}>
-          <Text numberOfLines={1} style={font(c)}>{project.name}</Text><Text numberOfLines={1} style={font(c, 9, c.theme().palette.muted)}>{project.stats}</Text>
+          <Text style={{ ...font(c), numberOfLines: 1 }}>{project.name}</Text><Text style={{ ...font(c, 9, c.theme().palette.muted), numberOfLines: 1 }}>{project.stats}</Text>
         </Button>)}
       </View>;
     }}</Each>
@@ -277,7 +278,7 @@ export function RemoteUnavailable(props: { hostLabel: string; panel: string; the
 export function RemoteProjectPanel(props: {
   controller: RemoteController; projectKey: () => string; panel: "worktrees" | "tasks" | "shells";
   query?: () => string; selectedWorktree?: () => string | null;
-  onQuery?: (query: string) => void; onSearch?: (node: YNode) => (() => void) | void;
+  onQuery?: (query: string) => void; onSearch?: (node: ViewRef) => (() => void) | void;
   onNewShell?: () => void;
   readChats?: (host: string, project: string) => Promise<{ id: string; title: string; provider: string; state: string }[]>;
   onChat?: (host: string, chat: string) => void;
@@ -312,7 +313,7 @@ export function RemoteProjectPanel(props: {
   const title = props.panel === "shells" ? "Sessions" : props.panel === "tasks" ? "Tasks" : "Worktrees";
   const noun = props.panel === "shells" ? "session" : props.panel === "tasks" ? "task" : "worktree";
   const row = () => ({ paddingHorizontal: space(8, c.theme().scale), paddingVertical: space(8, c.theme().scale), gap: 3, borderRadius: space(5, c.theme().scale) });
-  let search: YNode | undefined;
+  let search: ViewRef | undefined;
   let removeSearch: (() => void) | void;
   cleanup(() => removeSearch?.());
   const listNote = (project: RemoteLists) => {
@@ -323,8 +324,8 @@ export function RemoteProjectPanel(props: {
   return <View testID={`remote-${props.panel}-panel`} style={{ flex: 1, minHeight: 0, backgroundColor: c.theme().palette.panel }}>
     <View style={{ height: space(46, c.theme().scale), paddingHorizontal: space(12, c.theme().scale), flexDirection: "row", alignItems: "center", gap: 8 }}>
       <View style={{ flex: 1, minWidth: 0, gap: 1 }}>
-        <Text numberOfLines={1} style={{ ...font(c, 13), fontWeight: "600" }}>{title}</Text>
-        <Text numberOfLines={1} style={font(c, 10, c.theme().palette.muted)}>{`${count() === total() ? total() : `${count()} of ${total()}`} ${noun}${total() === 1 ? "" : "s"}${read() ? ` · ${read()!.projectName}` : ""}`}</Text>
+        <Text style={{ ...font(c, 13), fontWeight: "600", numberOfLines: 1 }}>{title}</Text>
+        <Text style={{ ...font(c, 10, c.theme().palette.muted), numberOfLines: 1 }}>{`${count() === total() ? total() : `${count()} of ${total()}`} ${noun}${total() === 1 ? "" : "s"}${read() ? ` · ${read()!.projectName}` : ""}`}</Text>
       </View>
       {props.panel === "shells" && props.onNewShell && <Button accessibilityLabel="New shell" disabled={read()?.link !== "online" || read()?.unpaired} onPress={props.onNewShell}
         style={{ width: 24, height: 24, borderRadius: 12, alignItems: "center", justifyContent: "center" }} hoverStyle={{ backgroundColor: c.theme().palette.panelActive }}>
@@ -334,7 +335,7 @@ export function RemoteProjectPanel(props: {
     <View style={{ paddingHorizontal: space(12, c.theme().scale), paddingBottom: space(8, c.theme().scale) }}>
       <View onPress={() => search?.focus()} style={{ flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: space(9, c.theme().scale), height: space(28, c.theme().scale), borderRadius: space(14, c.theme().scale), backgroundColor: c.theme().palette.panelActive }}>
         <Icon name="search" size={13 * c.theme().scale} color={c.theme().palette.muted} />
-        <Input testID={`search:remote-${props.panel}`} accessibilityLabel={`Search ${title.toLowerCase()}`} placeholder="Search  ⌘F" value={props.query?.() ?? ""} onChange={(value) => props.onQuery?.(value)}
+        <Input testID={`search:remote-${props.panel}`} accessibilityLabel={`Search ${title.toLowerCase()}`} placeholder="Search  ⌘F" value={props.query?.() ?? ""} onChange={({ value }) => props.onQuery?.(value)}
           ref={(node) => { search = node; removeSearch?.(); removeSearch = props.onSearch?.(node); }} style={{ ...font(c), flex: 1, minWidth: 0, padding: 0, backgroundColor: "transparent" }} />
         {!!props.query?.() && <Button accessibilityLabel="Clear search" onPress={() => { props.onQuery?.(""); search?.focus(); }} style={{ width: 20, height: 20, alignItems: "center", justifyContent: "center" }}>
           <Icon name="close" size={11 * c.theme().scale} color={c.theme().palette.muted} />
@@ -392,12 +393,12 @@ export function RemotePrompt(_props: { controller: RemoteController }) { return 
  * it, in the flow: it covers nothing and holds no keys outside itself. Escape
  * folds it while the keyboard focus is in it; the focus then goes back to
  * `opener`. Texts, fields and buttons as GPUI's RemotePrompt; the busy line is separate. */
-function RemoteForm(props: { controller: RemoteController; opener: () => YNode | undefined; inset?: number }) {
+function RemoteForm(props: { controller: RemoteController; opener: () => ViewRef | undefined; inset?: number }) {
   const c = props.controller, asked = untracked(c.prompt)!, kind = asked.kind;
   const title = asked.kind === "add" ? "Add host" : asked.kind === "pair" ? "Pair another Mac" : `New project on ${asked.label}`;
   const size = (value: number) => space(value, c.theme().scale);
   const inputStyle = () => ({ ...font(c), padding: 8, borderWidth: 1, borderColor: c.theme().palette.divider, borderRadius: 5, backgroundColor: c.theme().palette.bg });
-  const fields: (YNode | undefined)[] = [];
+  const fields: (ViewRef | undefined)[] = [];
   // Focus events do not bubble: each control of the form reports its own.
   const within = settingsFocusScope();
   function focusEvents() {
@@ -412,19 +413,19 @@ function RemoteForm(props: { controller: RemoteController; opener: () => YNode |
     fields[Math.max(0, values.findIndex((value) => !value))]?.focus();
   }));
   // After the pending flag clears, which enables the opener again.
-  cleanup(() => { if (untracked(within.containsFocus)) queueMicrotask(() => props.opener()?.focus()); });
+  cleanup(() => { if (untracked(within.containsFocus)) queueMicrotask(() => focusView(props.opener())); });
   const label = (text: string) => <Text style={font(c, 9, c.theme().palette.muted)}>{text}</Text>;
   // Return submits and keeps the focus in the field, where an error is fixed.
   function field(index: number, id: string, name: string, placeholder: string, value: () => string, change: (value: string) => void, masked = false) {
     return <View style={{ gap: size(4) }}>
       {label(name)}
       <Input testID={id} accessibilityLabel={name} placeholder={placeholder} masked={masked} value={value()} readonly={c.pending()} {...focusEvents()}
-        ref={(node) => { fields[index] = node; }} onChange={change} submitBehavior="submit" onSubmit={() => void c.submit()} style={inputStyle()} />
+        ref={(node) => { fields[index] = node; }} onChange={({ value }) => change(value)} submitBehavior="submit" onSubmit={() => void c.submit()} style={inputStyle()} />
     </View>;
   }
   function button(id: string, text: string, primary: boolean, press: (() => void) | undefined, focus = false) {
     const disabled = c.pending() || !press;
-    return <Button testID={id} accessibilityLabel={text.replace(/\s+↵$/u, "")} disabled={disabled} onPress={press} {...focusEvents()} ref={focus ? (node) => { node.focus(); } : undefined}
+    return <Button testID={id} accessibilityLabel={text.replace(/\s+↵$/u, "")} disabled={disabled} onPress={press} {...focusEvents()} ref={focus ? (node) => { focusView(node); } : undefined}
       style={{ paddingHorizontal: size(12), paddingVertical: size(8), borderWidth: 1, borderColor: primary ? c.theme().palette.cyan : c.theme().palette.divider,
         backgroundColor: primary ? c.theme().palette.panelActive : c.theme().palette.panel }} focusStyle={{ borderColor: c.theme().palette.focus }}>
       <Text style={font(c, 11, disabled ? c.theme().palette.muted : primary ? c.theme().palette.cyan : c.theme().palette.muted)}>{text}</Text>
@@ -444,7 +445,7 @@ function RemoteForm(props: { controller: RemoteController; opener: () => YNode |
     borderWidth: 1, borderRadius: 6, borderColor: c.theme().palette.divider, backgroundColor: c.theme().palette.panel }}>
     <Text style={font(c, 11, c.theme().palette.cyan)}>{title}</Text>
     <Text style={font(c, 10, c.theme().palette.muted)}>{PROMPT_DESCRIPTION[c.paired() ? "paired" : kind]}</Text>
-    {c.paired() ? <Text testID="remote-pairing-mask" numberOfLines={1} style={{ ...font(c, 11, c.theme().palette.cyan), padding: size(10), backgroundColor: c.theme().palette.bg, borderWidth: 1, borderColor: c.theme().palette.divider }}>{c.paired()!.masked}</Text> : inputs}
+    {c.paired() ? <Text testID="remote-pairing-mask" style={{ ...font(c, 11, c.theme().palette.cyan), padding: size(10), backgroundColor: c.theme().palette.bg, borderWidth: 1, borderColor: c.theme().palette.divider, numberOfLines: 1 }}>{c.paired()!.masked}</Text> : inputs}
     {c.pending() && !c.paired() && <Text testID="remote-prompt-busy" style={font(c, 11, c.theme().palette.cyan)}>{kind === "pair" ? "Making a pairing link…" : "Pairing…"}</Text>}
     {!!c.error() && <Text testID="remote-prompt-error" style={font(c, 11, c.theme().palette.gold)}>{c.error()}</Text>}
     <View style={{ flexDirection: "row", flexWrap: "wrap", justifyContent: "flex-end", gap: size(10) }}>
@@ -466,7 +467,7 @@ export function RemoteStrip(props: { label: string; link: RemoteHostLink; ended:
   const space = (value: number) => value * theme().scale, tone = () => theme().palette[strip()!.tone];
   return <>{strip() && <View testID="remote-terminal-strip" style={{ flexShrink: 0, height: space(24), flexDirection: "row", alignItems: "center", gap: space(10), paddingHorizontal: space(10),
     backgroundColor: theme().palette.panelActive, borderBottomWidth: 1, borderColor: tone() }}>
-    <Text numberOfLines={1} style={{ flex: 1, minWidth: 0, fontFamily: theme().family, fontSize: space(10), color: tone() }}>{strip()!.text}</Text>
+    <Text style={{ flex: 1, minWidth: 0, fontFamily: theme().family, fontSize: space(10), color: tone(), numberOfLines: 1 }}>{strip()!.text}</Text>
     {strip()!.reconnect && <Button testID="remote-reconnect" accessibilityLabel="Reconnect remote session" onPress={props.onReconnect}
       style={{ paddingHorizontal: space(8), paddingVertical: space(2), borderWidth: 1, borderColor: theme().palette.divider }} hoverStyle={{ backgroundColor: theme().palette.divider }}>
       <Text style={{ fontFamily: theme().family, fontSize: space(10), color: theme().palette.text }}>Reconnect</Text>

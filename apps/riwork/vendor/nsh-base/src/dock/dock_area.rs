@@ -99,7 +99,7 @@ use super::{
     value::DockAreaLayout,
 };
 use crate::resizable::{
-    HANDLE_SIZE, HandleEdge, resizable_panel, resizable_panel_group, resize_handle,
+    HANDLE_SIZE, HandleEdge, ShowHandles, resizable_panel, resizable_panel_group, resize_handle,
 };
 
 /// Below this width of its own the area presents itself compactly.
@@ -430,38 +430,64 @@ impl DockAreaApi {
 
     /// Removes panel `panel`, whatever its options say.
     pub fn remove_panel(&self, panel: PanelId) {
-        self.a.edit(|area| area.remove_panel(panel.as_str()));
+        if self.a.has_panel("removePanel", &panel) {
+            self.a.edit(|area| area.remove_panel(panel.as_str()));
+        }
     }
 
     /// Closes panel `panel` as its tab would: unless the area is locked,
     /// the panel is not closable, or it is the last panel of a group with
     /// nothing beside it.
     pub fn close_panel(&self, panel: PanelId) {
-        self.a.close(&panel);
+        if self.a.has_panel("closePanel", &panel) {
+            self.a.close(&panel);
+        }
     }
 
     /// Moves panel `panel` to `target` (a panel the area does not hold yet
     /// is added there).
     pub fn move_panel(&self, panel: PanelId, target: DockTarget) {
         let target = target.insert_target();
-        self.a.edit(|area| area.move_panel(panel, target));
+        let known = match target {
+            InsertTarget::Tabs { node, .. } => self.a.has_group("movePanel", node),
+            InsertTarget::Split { node, .. } => self.a.has_node("movePanel", node),
+        };
+        if known {
+            self.a.edit(|area| area.move_panel(panel, target));
+        }
     }
 
     /// Puts panel `panel` in a new tab group on the `side` of container
     /// `group`.
     pub fn split_at(&self, group: u64, panel: PanelId, side: Placement) {
         let node = NodeId::from_u64(group);
-        self.a.edit(|area| area.split_at(node, panel, side, None));
+        if self.a.has_node("splitAt", node) {
+            self.a.edit(|area| area.split_at(node, panel, side, None));
+        }
     }
 
     /// Displays panel `panel` in its group.
     pub fn select_panel(&self, panel: PanelId) {
-        self.a.select(&panel);
+        if self.a.has_panel("selectPanel", &panel) {
+            self.a.select(&panel);
+        }
     }
 
     /// Displays tab `index` of tab group `group`.
     pub fn select_tab(&self, group: u64, index: usize) {
         let node = NodeId::from_u64(group);
+        if !self.a.has_group("selectTab", node) {
+            return;
+        }
+        let count = self
+            .a
+            .latest(|area| area.group(node).map_or(0, |group| group.panels.len()));
+        if index >= count {
+            log::warn!(
+                "DockArea.selectTab: tab {index} out of range (group {group} has {count} tabs)"
+            );
+            return;
+        }
         self.a.edit(|area| area.set_active(node, index));
     }
 
@@ -470,27 +496,38 @@ impl DockAreaApi {
     /// presents the dock as a drawer (a sheet at the bottom), dismissing
     /// the one presented, or dismisses it; the layout stays as it is.
     pub fn toggle_dock(&self, placement: DockPlacement) {
-        let open = self.a.is_dock_open_untracked(placement);
-        self.a.set_dock_open(placement, !open);
+        if self.a.has_dock("toggleDock", placement) {
+            let open = self.a.is_dock_open_untracked(placement);
+            self.a.set_dock_open(placement, !open);
+        }
     }
 
     /// Opens (`true`) or closes the dock at `placement` (at compact width:
     /// presents or dismisses it, as `toggleDock`).
     pub fn set_dock_open(&self, placement: DockPlacement, open: bool) {
-        self.a.set_dock_open(placement, open);
+        if self.a.has_dock("setDockOpen", placement) {
+            self.a.set_dock_open(placement, open);
+        }
     }
 
     /// Sets the size of the dock at `placement` across its edge (never
     /// below 100 points).
     pub fn set_dock_size(&self, placement: DockPlacement, size: Points) {
-        self.a.edit(|area| area.set_dock_size(placement, size));
+        if self.a.has_dock("setDockSize", placement) {
+            self.a.edit(|area| area.set_dock_size(placement, size));
+        }
     }
 
     /// Zooms tab group `group` in (it fills the area) or, when it is
     /// zoomed, out; without `group`, the zoomed group out.
     pub fn toggle_zoom(&self, group: Option<u64>) {
         match group {
-            Some(group) => self.a.toggle_zoom(NodeId::from_u64(group)),
+            Some(group) => {
+                let node = NodeId::from_u64(group);
+                if self.a.has_group("toggleZoom", node) {
+                    self.a.toggle_zoom(node);
+                }
+            }
             None => self.a.set_zoom(None),
         }
     }
@@ -526,8 +563,15 @@ impl DockAreaApi {
 /// sheet.
 #[component(methods = DockAreaApi)]
 pub fn DockArea(props: DockAreaProps, cx: Scope<DockAreaEvent>) -> impl IntoElement {
-    let a = AreaCx::new(props, cx);
+    let a = AreaCx::new(props, move |event| cx.emit(event), true);
     cx.methods(DockAreaApi { a });
+    area_view(a)
+}
+
+/// The view of area `a`: what `DockArea` renders, and what another
+/// component of `nsh/base` built on the area renders in its own view
+/// (`SplitView`), so the slots it places in the panels are its own.
+pub(crate) fn area_view(a: AreaCx) -> View {
     a.watch();
     // Its size is its parent's: what it holds never makes it bigger (no
     // minimum from its content), and what does not fit is clipped.
@@ -537,6 +581,9 @@ pub fn DockArea(props: DockAreaProps, cx: Scope<DockAreaEvent>) -> impl IntoElem
         .overflow_hidden()
         .min_w(px(0.0))
         .min_h(px(0.0))
+        // A terminal keeps no percentage height for a box of content: the
+        // area grows into its parent's room instead.
+        .when(crate::terminal::is_terminal(), |v| v.flex_grow(1.0))
         .on_layout(move |frame: &Bounds<Points>| a.size.set(frame.size))
         .child(
             when(
@@ -599,11 +646,19 @@ pub(crate) struct DockDrag {
     raw: Points,
 }
 
+/// Where an area's events go: the `DockArea`'s scope, or the component of
+/// `nsh/base` that renders the area in its own view (`SplitView`).
+pub(crate) type AreaEmit = Rc<dyn Fn(DockAreaEvent)>;
+
 /// What the area's views and listeners share (`Copy`: handles).
 #[derive(Clone, Copy)]
 pub(crate) struct AreaCx {
     pub(crate) props: DockAreaProps,
-    pub(crate) cx: Scope<DockAreaEvent>,
+    emit: Stored<AreaEmit>,
+    /// The user resizes the splits and the docks by their handles. Off for
+    /// an area whose sizes its owner keeps (`SplitView`): its splits and
+    /// docks have no handles (`ShowHandles`).
+    pub(crate) resizable: bool,
     /// The layout shown: the app's, or the area's own.
     pub(crate) area: Memo<Area>,
     own: Signal<Area>,
@@ -621,12 +676,22 @@ pub(crate) struct AreaCx {
     /// The area's size.
     size: Signal<Size<Points>>,
     dock_drag: Signal<Option<DockDrag>>,
+    /// Bumped each time the drop indicator's overlay is first laid out (a
+    /// commit after it opened): the key of the drag preview's row, which
+    /// mounts the preview again, above the indicator.
+    pub(crate) indicator_shown: Signal<u32>,
     /// The last edit of a controlled area, until the app passes a layout.
     pending: Stored<Option<Area>>,
 }
 
 impl AreaCx {
-    fn new(props: DockAreaProps, cx: Scope<DockAreaEvent>) -> Self {
+    /// An area of `props` reporting its events to `emit`; `resizable` lets
+    /// the user resize its splits and docks.
+    pub(crate) fn new(
+        props: DockAreaProps,
+        emit: impl Fn(DockAreaEvent) + 'static,
+        resizable: bool,
+    ) -> Self {
         let own = signal(untracked(|| {
             Area::from_layout(&props.default_layout.get().unwrap_or_default())
         }));
@@ -648,9 +713,11 @@ impl AreaCx {
                 width < COMPACT_WIDTH
             })
         });
+        let emit: AreaEmit = Rc::new(emit);
         Self {
             props,
-            cx,
+            emit: stored(emit),
+            resizable,
             area,
             own,
             zoomed: signal(None),
@@ -662,8 +729,68 @@ impl AreaCx {
             presented: signal(None),
             size,
             dock_drag: signal(None),
+            indicator_shown: signal(0),
             pending: stored(None),
         }
+    }
+
+    /// Reports `event` to whoever renders the area. Crate-visible for the tab drag's
+    /// `DragChange` (`tab_group.rs`).
+    pub(crate) fn emit(self, event: DockAreaEvent) {
+        // Called outside the stored value's borrow: a listener may reach the
+        // area again.
+        let emit = self.emit.get();
+        emit(event);
+    }
+
+    /// Reads the layout the next edit builds on: the one waiting for the
+    /// app to pass it back, else the one shown.
+    pub(crate) fn latest<R>(self, f: impl FnOnce(&Area) -> R) -> R {
+        match self.pending.with(|p| p.clone()) {
+            Some(area) => f(&area),
+            None => self.area.with_untracked(f),
+        }
+    }
+
+    // A ref's command runs when called and cannot throw: an id the layout
+    // does not hold does nothing and is logged, never a silent no-op.
+
+    fn has_panel(self, method: &str, panel: &PanelId) -> bool {
+        let has = self.latest(|area| area.placement_of_panel(panel.as_str()).is_some());
+        if !has {
+            log::warn!("DockArea.{method}: no panel `{panel}` in the layout");
+        }
+        has
+    }
+
+    fn has_node(self, method: &str, node: NodeId) -> bool {
+        let has = self.latest(|area| area.placement_of_node(node).is_some());
+        if !has {
+            log::warn!(
+                "DockArea.{method}: no group {} in the layout",
+                node.as_u64()
+            );
+        }
+        has
+    }
+
+    fn has_group(self, method: &str, node: NodeId) -> bool {
+        let has = self.latest(|area| area.group(node).is_some());
+        if !has {
+            log::warn!(
+                "DockArea.{method}: no tab group {} in the layout",
+                node.as_u64()
+            );
+        }
+        has
+    }
+
+    fn has_dock(self, method: &str, placement: DockPlacement) -> bool {
+        let has = self.latest(|area| area.dock(placement).is_some());
+        if !has {
+            log::warn!("DockArea.{method}: the layout has no dock at {placement:?}");
+        }
+        has
     }
 
     /// Applies `f` to the layout; when it changed something, reports the
@@ -690,9 +817,9 @@ impl AreaCx {
                 pending.replace(None);
             });
         }
-        self.cx.emit(DockAreaEvent::LayoutChange(next.to_layout()));
+        self.emit(DockAreaEvent::LayoutChange(next.to_layout()));
         for panel in before.removed_in(&next) {
-            self.cx.emit(DockAreaEvent::PanelRemove(panel));
+            self.emit(DockAreaEvent::PanelRemove(panel));
         }
         true
     }
@@ -813,7 +940,7 @@ impl AreaCx {
                 .with_untracked(|area| area.group(node))
                 .and_then(|group| group.active().cloned())
         });
-        self.cx.emit(DockAreaEvent::ZoomChange(panel));
+        self.emit(DockAreaEvent::ZoomChange(panel));
     }
 
     /// The effects that follow the layout: which panels are displayed
@@ -851,8 +978,7 @@ impl AreaCx {
                 untracked(|| {
                     for (ix, placement) in DockPlacement::DOCKS.into_iter().enumerate() {
                         if before[ix] != now[ix] {
-                            self.cx
-                                .emit(DockAreaEvent::DockOpenChange(placement, now[ix]));
+                            self.emit(DockAreaEvent::DockOpenChange(placement, now[ix]));
                         }
                     }
                 });
@@ -866,7 +992,7 @@ impl AreaCx {
                 let mut on = Vec::new();
                 told.with(|told| {
                     let mut ids: Vec<&PanelId> = now.keys().collect();
-                    ids.sort();
+                    crate::sort::sort_by(&mut ids, |a, b| a.cmp(b));
                     for panel in ids {
                         let active = now[panel];
                         match told.get(panel) {
@@ -879,10 +1005,10 @@ impl AreaCx {
                 });
                 told.replace(now);
                 for panel in off {
-                    self.cx.emit(DockAreaEvent::PanelActiveChange(panel, false));
+                    self.emit(DockAreaEvent::PanelActiveChange(panel, false));
                 }
                 for panel in on {
-                    self.cx.emit(DockAreaEvent::PanelActiveChange(panel, true));
+                    self.emit(DockAreaEvent::PanelActiveChange(panel, true));
                 }
             });
         });
@@ -1032,6 +1158,12 @@ fn split_view(a: AreaCx, node: NodeId) -> AnyElement {
         }
         slots
     });
+    if !a.resizable {
+        // The group made next has no handles: nothing drags, adjusts or
+        // focuses a boundary the owner keeps (it provides handles again to
+        // the panels' content).
+        provide_context(ShowHandles(false));
+    }
     let mut group = resizable_panel_group();
     // The app's style prop as it is (the setter takes typed styles).
     group.__element().__props_mut().handle_style = a.props.handle_style;
@@ -1100,6 +1232,7 @@ fn dock_frame(a: AreaCx, placement: DockPlacement) -> AnyElement {
                     .map_or(Points::ZERO, |info| fit_dock(a, placement, info.size)),
             };
             let open = move || info.get().is_some_and(|info| info.open);
+            let terminal = crate::terminal::is_terminal();
             let (axis, edge) = match placement {
                 DockPlacement::Left => (Axis::Horizontal, HandleEdge::Trailing),
                 DockPlacement::Right => (Axis::Horizontal, HandleEdge::Leading),
@@ -1121,6 +1254,13 @@ fn dock_frame(a: AreaCx, placement: DockPlacement) -> AnyElement {
                 .flex_col()
                 .overflow_hidden()
                 .style_with(move |s| match placement {
+                    // A terminal keeps no explicit height for a box of
+                    // content: the dock's rows are its basis in the column.
+                    // Its handle's line takes a Cell of its own on the
+                    // edge it hugs, not one of the dock's tabs or content.
+                    DockPlacement::Bottom if terminal => s.basis(size()).pt(px(24.0)),
+                    DockPlacement::Left if terminal => s.w(size()).pr(px(8.0)),
+                    DockPlacement::Right if terminal => s.w(size()).pl(px(8.0)),
                     DockPlacement::Bottom => s.h(size()),
                     _ => s.w(size()),
                 })
@@ -1141,55 +1281,59 @@ fn dock_frame(a: AreaCx, placement: DockPlacement) -> AnyElement {
                         .min_w(px(0.0))
                         .child(region(a, placement)),
                 )
-                .child(
-                    {
-                        let mut handle = resize_handle();
-                        // The app's style prop as it is (the setter takes
-                        // typed styles).
-                        handle.__element().__props_mut().thumb_style = a.props.handle_thumb_style;
-                        handle
-                    }
-                    .axis(axis)
-                    .edge(edge)
-                    .thumb_class(a.props.handle_thumb_class)
-                    .accessibility_label(a.props.handle_accessibility_label)
-                    .on_drag_start(move || {
-                        let from = info.get_untracked().map_or(Points::ZERO, |i| i.size);
-                        a.dock_drag.set(Some(DockDrag {
-                            placement,
-                            from,
-                            raw: from,
-                        }));
-                    })
-                    .on_drag_move(move |offset: &Points| {
-                        a.dock_drag.update(|drag| {
-                            if let Some(drag) = drag {
-                                drag.raw = drag.from + *offset * sign;
-                            }
-                        });
-                    })
-                    .on_drag_end(move |offset: &Points| {
-                        let Some(drag) = a.dock_drag.get_untracked() else {
-                            return;
-                        };
-                        a.dock_drag.set(None);
-                        end_dock_drag(a, placement, drag.from + *offset * sign);
-                    })
-                    .child(
-                        // The indicator is a full-length one-point line.
-                        // Its geometry does not depend on having content;
-                        // the app's class or style only needs to color it.
-                        view()
-                            .flex_none()
-                            .pointer_events(PointerEvents::None)
-                            .map(|v| match axis {
-                                Axis::Horizontal => v.w(HANDLE_SIZE).h_full(),
-                                Axis::Vertical => v.h(HANDLE_SIZE).w_full(),
-                            })
-                            .app_class(a.props.handle_class)
-                            .inline_style(a.props.handle_style),
-                    ),
-                )
+                // An area whose sizes its owner keeps has no handle here.
+                .when(a.resizable, |v| {
+                    v.child(
+                        {
+                            let mut handle = resize_handle();
+                            // The app's style prop as it is (the setter takes
+                            // typed styles).
+                            handle.__element().__props_mut().thumb_style =
+                                a.props.handle_thumb_style;
+                            handle
+                        }
+                        .axis(axis)
+                        .edge(edge)
+                        .thumb_class(a.props.handle_thumb_class)
+                        .accessibility_label(a.props.handle_accessibility_label)
+                        .on_drag_start(move || {
+                            let from = info.get_untracked().map_or(Points::ZERO, |i| i.size);
+                            a.dock_drag.set(Some(DockDrag {
+                                placement,
+                                from,
+                                raw: from,
+                            }));
+                        })
+                        .on_drag_move(move |offset: &Points| {
+                            a.dock_drag.update(|drag| {
+                                if let Some(drag) = drag {
+                                    drag.raw = drag.from + *offset * sign;
+                                }
+                            });
+                        })
+                        .on_drag_end(move |offset: &Points| {
+                            let Some(drag) = a.dock_drag.get_untracked() else {
+                                return;
+                            };
+                            a.dock_drag.set(None);
+                            end_dock_drag(a, placement, drag.from + *offset * sign);
+                        })
+                        .child(
+                            // The indicator is a full-length one-point line.
+                            // Its geometry does not depend on having content;
+                            // the app's class or style only needs to color it.
+                            view()
+                                .flex_none()
+                                .pointer_events(PointerEvents::None)
+                                .map(|v| match axis {
+                                    Axis::Horizontal => v.w(HANDLE_SIZE).h_full(),
+                                    Axis::Vertical => v.h(HANDLE_SIZE).w_full(),
+                                })
+                                .app_class(a.props.handle_class)
+                                .inline_style(a.props.handle_style),
+                        ),
+                    )
+                })
         },
     )
     .into_element()
@@ -1278,6 +1422,13 @@ fn end_dock_drag(a: AreaCx, placement: DockPlacement, raw: Points) {
 /// `renderDragPreview`, in an overlay at the pointer that takes no touches.
 /// It moves by a transform, not its frame, so the drop indicator's layout
 /// animation (`tab_group.rs`) leaves it at the pointer.
+///
+/// Overlays stack in the order they open, and the drop indicator opens
+/// once the drag has a target, after the preview: the preview is mounted
+/// again each time the indicator opens, a row keyed by
+/// [`AreaCx::indicator_shown`] (a region run again would keep its node and
+/// its place), so it stays on top (the indicator's outline would cross the
+/// dragged tab's label in a terminal).
 fn drag_preview(a: AreaCx) -> AnyElement {
     let shown = computed(move || {
         a.drag.with(|drag| drag.is_some()) && a.props.render_drag_preview.with(Option::is_some)
@@ -1291,25 +1442,39 @@ fn drag_preview(a: AreaCx) -> AnyElement {
             y.set(at.y.0);
         }
     });
-    when(
-        move || shown.get(),
-        move || {
-            overlay()
-                .pointer_events(PointerEvents::None)
-                .focusable(false)
-                .left(Points::ZERO)
-                .top(Points::ZERO)
-                .bind_translate_x(&x)
-                .bind_translate_y(&y)
-                .child(dynamic(move || {
-                    let panel = dragged.get()?;
-                    let tab = untracked(|| super::tab_group::tab_value(a, &panel))?;
-                    a.props
-                        .render_drag_preview
-                        .get()
-                        .map(|r| r.render("preview", tab))
-                }))
+    // One row while the drag shows its preview, keyed by the indicator's
+    // openings: a new key is a new row, so the old preview's node goes and
+    // a new one opens, in the same commit.
+    each(
+        move || match shown.get() {
+            true => vec![a.indicator_shown.get()],
+            false => Vec::new(),
         },
+        |&opened: &u32| opened,
+        move |_, _| preview(a, dragged, x, y),
     )
-    .into_element()
+}
+
+/// The drag preview's overlay, at the pointer by `x` and `y`.
+fn preview(
+    a: AreaCx,
+    dragged: Memo<Option<PanelId>>,
+    x: AnimatedValue,
+    y: AnimatedValue,
+) -> impl IntoElement {
+    overlay()
+        .pointer_events(PointerEvents::None)
+        .focusable(false)
+        .left(Points::ZERO)
+        .top(Points::ZERO)
+        .bind_translate_x(&x)
+        .bind_translate_y(&y)
+        .child(dynamic(move || {
+            let panel = dragged.get()?;
+            let tab = untracked(|| super::tab_group::tab_value(a, &panel))?;
+            a.props
+                .render_drag_preview
+                .get()
+                .map(|r| r.render("preview", tab))
+        }))
 }

@@ -48,7 +48,7 @@ function Fixture() {
   host.on("app.fixture.scenario", (event) => state.set(scenario((event as { name: string }).name)));
   return <View style={{ flex: 1 }}>
     <View style={{ flex: 1, minHeight: 0 }}><PanelContent controller={{ ...controller, state }} panel="worktrees" surface="fixture" /></View>
-    {notice() !== "" && <Text testID="fixture-notice" numberOfLines={2} style={{ padding: 6, fontSize: 10 }}>{notice()}</Text>}
+    {notice() !== "" && <Text testID="fixture-notice" style={{ padding: 6, fontSize: 10, numberOfLines: 2 }}>{notice()}</Text>}
   </View>;
 }
 mount(Fixture);

@@ -13,7 +13,7 @@ Repository paths and commands below are relative to the checkout root.
 
 - macOS with Xcode command line tools
 - Rust 1.99.1 (selected by `rust-toolchain.toml`)
-- NSH CLI 0.3.0 for the TypeScript UI build, matching the pinned Rust NSH crates. Set `NSH_CLI` to that version's absolute executable path when another version is on your `PATH`. `somtus update` requires an absolute path for this override and does not download a CLI automatically.
+- NSH CLI 0.6.1 for the TypeScript UI build, matching the pinned Rust NSH crates. Set `NSH_CLI` to that version's absolute executable path when another version is on your `PATH`. `somtus update` requires an absolute path for this override and does not download a CLI automatically.
 - Zig 0.16 for the Ghostty native build. `somtus update` uses the one unpacked as `toolchains/zig-0.16*` in the Somtus data directory (`~/.local/share/riwork` by default) when `ZIG` is not set; keep it out of `/tmp`, whose periodic cleanup deletes its standard library
 - tmux (`brew install tmux`) for persistent shells
 - Vim for editing files in persistent Somtus tabs (included with macOS)
@@ -38,7 +38,7 @@ Core and engine have no GPUI or Ghostty dependency. The desktop calls the same C
 
 ```sh
 export ZIG=/path/to/zig-0.16/zig
-export NSH_CLI=/path/to/nsh-0.3.0/bin/nsh
+export NSH_CLI=/path/to/nsh-0.6.1/bin/nsh
 export CARGO_TARGET_DIR="$PWD/target"
 (
 set -eu
@@ -83,10 +83,10 @@ RIWORK_NSH_BUNDLE="$PWD/target/debug/riwork-ui/bundle.js" cargo run -- /path/to/
 
 `RIWORK_NSH_BUNDLE` must be an absolute path. Keep the rest of the UI output beside `bundle.js`, including its `assets` directory. This developer override is unnecessary for the packaged app.
 
-For automatic TSX reloads in a separate development window, use the pinned NSH 0.3.0 CLI:
+For automatic TSX reloads in a separate development window, use the pinned NSH 0.6.1 CLI:
 
 ```sh
-NSH_CLI=/absolute/path/to/nsh-0.3.0/bin/nsh python3 scripts/dev-ui.py
+NSH_CLI=/absolute/path/to/nsh-0.6.1/bin/nsh python3 scripts/dev-ui.py
 ```
 
 The launcher builds the desktop with `dev-reload`, starts `nsh dev --server-only`, and opens this checkout using separate data and runtime directories under `target/dev-ui`. `--project /path/to/project` chooses the project and `--home /path/to/dev-data` chooses a separate persistent development home. It leaves the installed app running. Saving TSX rebuilds the UI and reloads every development window without rebuilding Rust. Build failures keep the current UI. Before a reload, the host flushes drafts and layouts, stops the old UI engines, and waits for terminal clients to detach; persistent shells and chats remain owned by their backend services. The new views restore their current project and layout. NSH 0.3's public embedding API remounts the whole view, so local component state, focus and scroll position reset. Rust changes still require stopping and rerunning the command. Ctrl-C stops the development window and server.
@@ -122,7 +122,7 @@ Reloads preserve each window's project, layout, position, and persistent shells.
 
 `update` builds and packages your local source in a staging directory, including `somtus-remote` when the checkout contains its manifest, then installs the executable and app together. A companion failure preserves the previous installation. It defaults to an optimized release build, including when run from a debug CLI. Use `--source /path/to/riWork` to choose a checkout, `--debug` for a development build, or `--no-reload` to install without reopening windows. `--release` selects the default explicitly; it cannot be combined with `--debug`. The command does not fetch or change Git history. Later `open` and `reload` commands use the latest successfully installed app, including when its profile or source checkout differs from the CLI's. Build failures keep the installed app running and retain a diagnostic log.
 
-For an NSH checkout, `update` also builds the UI into a fresh staging directory and packages all its assets with the executable. It requires NSH CLI 0.3.0; use `NSH_CLI=/absolute/path/to/nsh` to select it. A missing or incompatible CLI, or a failed UI build, leaves the installed app untouched. Updating a legacy GPUI checkout keeps its original build flow.
+For an NSH checkout, `update` also builds the UI into a fresh staging directory and packages all its assets with the executable. It requires NSH CLI 0.6.1; use `NSH_CLI=/absolute/path/to/nsh` to select it. A missing or incompatible CLI, or a failed UI build, leaves the installed app untouched. Updating a legacy GPUI checkout keeps its original build flow.
 
 Before anything is replaced, `update` checks the staged bundle's code signature and starts both the staged executable and the one inside the bundle with `somtus help`. A build that compiles but fails to start is rejected, and the installed build stays as it was. The build being replaced is kept next to the new one as `Somtus.app.previous` and `somtus.previous` in `target/<profile>` until the next successful update replaces them. `update` prints the `.previous` location and repeats it if the reload fails. To roll back after a bad update:
 

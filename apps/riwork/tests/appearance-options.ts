@@ -17,7 +17,10 @@ export function options(windowId: string, theme = "ri_work") {
           panes: { "1": { tabs: [{ kind: "panel", panel: "projects" }, { kind: "panel", panel: "files" }], active_tab_key: "panel:files" } },
         } },
       },
-      handlers: { "system.fonts": { families: ["SF Mono", "Menlo"] }, "window.open": { windowId: "global-fixture", created: true }, "app.fixture.saved": null },
+      handlers: { "system.fonts": { families: ["SF Mono", "Menlo"] }, "window.open": { windowId: "global-fixture", created: true }, "app.fixture.saved": null,
+        // The desktop host applies the window's appearance. Ungranted or unanswered, the call is refused
+        // (an error since NSH 0.4) and the window shows that as a notice over its controls.
+        "app.setAppearance": null },
     },
   };
 }

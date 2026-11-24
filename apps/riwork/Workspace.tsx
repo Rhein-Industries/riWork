@@ -5,9 +5,9 @@ import { CustomizationFrame } from "./CustomizationFrame";
 import { useCustomization, type CustomizationService } from "./customization";
 import { DEFAULT_CUSTOMIZATION, visibleWorkspace } from "./customization_model";
 import { CuaSetup, useCua, type CuaSetupControl } from "./CuaSetup";
-import { Clipboard, ErrorBoundary, Overlay, Scroll, Text, View, batch, cleanup, colorScheme, computed, effect, host, keymap, signal, untracked, type YNode } from "nsh";
+import { Clipboard, ErrorBoundary, Overlay, Scroll, Text, View, batch, cleanup, colorScheme, computed, effect, host, keymap, signal, untracked, type ViewRef } from "nsh";
 import { Button, Input, Popover, type DockAreaLayout, type DockNode } from "nsh/base";
-import { Menu, Window, type MenuItem } from "nsh/desktop";
+import { Menu, currentWindow, type MenuItem } from "nsh/desktop";
 import { Addins, Appearance, Chat, Files, Orchestrators, Remote, Sessions, Tabs, type AppearanceDto, type LayoutSession, type SettingsDto } from "riwork/native";
 import { DockArea } from "./DockArea";
 import { DeferredPanel, MountProbe } from "./DeferredPanel";
@@ -34,6 +34,7 @@ import { createRemoteController, RemoteProjects, RemoteProjectPanel, RemoteSetti
 import { RemoteTerminal } from "./remote/RemoteTerminal";
 import { filteredFolders, remoteHostLabel, remoteLocalOnly, remotePanelUnavailable, remoteProjectKey, remoteTabTitle, remoteTitle, splitRemoteTitle } from "./remote/model";
 import { workspaceRemote, type WorkspaceRemoteApi } from "./remote/workspace";
+import { focusView } from "./keyboard";
 import { AppSettings } from "./settings/AppSettings";
 import { ProjectSettingsPanel } from "./settings/ProjectSettings";
 import { WorkspaceModsSettings } from "./settings/WorkspaceModsSettings";
@@ -59,7 +60,7 @@ interface WorkspaceProps {
   /** Observe native-node creation in the headless lifecycle regression. */
   onTerminalMount?: (shellId: string) => void;
   /** In-process geometry observer for headless gesture fixtures. */
-  onViewRef?: (id: string, node: YNode) => void;
+  onViewRef?: (id: string, node: ViewRef) => void;
 }
 
 function panelIds(node: DockNode): string[] {
@@ -117,8 +118,8 @@ export function Workspace(props: WorkspaceProps) {
   effect(() => { const next = props.appearanceNotice?.(); if (next) notice.set(next); });
   const textStyle = (base = 11) => ({ fontFamily: theme().family, fontSize: base * theme().scale, color: theme().palette.text });
   const mutedStyle = (base = 11) => ({ ...textStyle(base), color: theme().palette.muted });
-  let root: YNode | null = null;
-  function dismissNotice() { notice.set(""); root?.focus(); }
+  let root: ViewRef | null = null;
+  function dismissNotice() { notice.set(""); focusView(root); }
   const projectId = computed(() => snapshot().projectId ?? props.projectId ?? "");
   // Gate subtree construction on a stable primitive. Watching the whole layout
   // here would reconstruct local terminals on every unrelated delivery.
@@ -156,7 +157,7 @@ export function Workspace(props: WorkspaceProps) {
   const containerHeight = signal(0);
   const hovered = signal<string | null>(null);
   const tabHint = signal<{ id: string; text: string } | null>(null);
-  const bodyRefs = new Map<string, YNode>();
+  const bodyRefs = new Map<string, ViewRef>();
   const terminalControls = new Map<string, TerminalController>();
   const terminalControlsVersion = signal(0);
   function registerTerminalControl(id: string, control: TerminalController) {
@@ -168,7 +169,7 @@ export function Workspace(props: WorkspaceProps) {
       terminalControlsVersion.set(untracked(() => terminalControlsVersion()) + 1);
     };
   }
-  const tabRefs = new Map<string, YNode>();
+  const tabRefs = new Map<string, ViewRef>();
   const chatUsage = signal<Record<string, NativeChatUsage>>({});
   let alive = true;
   cleanup(() => { alive = false; bodyRefs.clear(); terminalControls.clear(); tabRefs.clear(); });
@@ -178,7 +179,9 @@ export function Workspace(props: WorkspaceProps) {
     cleanup(() => subscription.close());
   }
   let size: Extent | undefined;
-  const updateTitle = createTitleUpdater((title) => Window.setTitle(title));
+  // The window is known only while this component renders; the title follows later.
+  const nativeWindow = currentWindow();
+  const updateTitle = createTitleUpdater((title) => nativeWindow.set({ title }));
   const panelState: PanelController = createPanelController({
     projectId,
     projectLabel: () => panelState.state().projects.find((project) => project.id === projectId())?.name ?? props.projectLabel,
@@ -652,7 +655,7 @@ export function Workspace(props: WorkspaceProps) {
 
   function focusActive() {
     const id = selected();
-    if (id) bodyRefs.get(id)?.focus();
+    if (id) focusView(bodyRefs.get(id));
   }
   function install(next: unknown, refreshMetadata = true) {
     // Only session results may be installed. The reported DockArea tree is never
@@ -1112,7 +1115,7 @@ export function Workspace(props: WorkspaceProps) {
     const control = () => ({ width: space(M.nativeButton, theme().scale), height: space(M.nativeButton, theme().scale), borderRadius: M.buttonRadius, justifyContent: "center" as const, alignItems: "center" as const });
     return <View desktop={{ windowDrag: !!dock() && topPaneFrames(dock()!.center, measured()).some((frame) => frame.id === id) }} style={{ flexDirection: "row", alignItems: "center", gap: M.buttonGap, paddingRight: 3, flexShrink: 0 }}>
       {(paneOverflow(id) || (allTabs() && allTabsPane() === id)) && <Popover open={allTabs() && allTabsPane() === id}
-        onOpenChange={(open) => {
+        onOpenChange={({ open }) => {
           if (open) { action(() => session.selectPane(id)); allTabsPane.set(id); allTabs.set(true); hovered.set(null); allIndex.set(Math.max(0, sessions().findIndex((tab) => tab.id === pane()?.activeTab))); freeze(); }
           else { allTabs.set(false); allTabsPane.set(null); thaw(); }
         }} placement="bottom" align="end" popupStyle={{ width: M.allTabsWidth, maxHeight: M.allTabsMaxHeight, backgroundColor: theme().palette.panel, padding: 4 }}
@@ -1143,7 +1146,7 @@ export function Workspace(props: WorkspaceProps) {
     const symbol = panel && (shared() || snapshot().panelTabIcons);
     const ink = active ? theme().palette.text : theme().palette.muted;
     return <View ref={(node) => tabRefs.set(`pane:${tab.id}`, node)} testID={`tab-${tab.id}`} accessibilityLabel={`${shownTitle}${!panel && tab.status ? `, ${tab.status}` : ""}`}
-      onContextMenu={() => tabMenu(tab.id)} onHoverIn={() => hovered.set(tab.id)} onHoverOut={() => hovered.set(null)}
+      onContextMenu={() => tabMenu(tab.id)} onMouseEnter={() => hovered.set(tab.id)} onMouseLeave={() => hovered.set(null)}
       style={{ height: header() - 1, width: symbol ? panelCellWidth(pane?.id ?? snapshot().activePane) : undefined, maxWidth: symbol ? undefined : space(267, theme().scale), minWidth: 0, flexShrink: 0,
         paddingLeft: symbol ? 0 : space(8, theme().scale), paddingRight: symbol ? 0 : 4, flexDirection: "row", alignItems: "center", justifyContent: symbol ? "center" : undefined, gap: 6,
         borderRightWidth: 1, borderColor: theme().palette.divider, backgroundColor: active ? pane?.active ? theme().palette.bg : theme().palette.panelActive : theme().palette.panel }}
@@ -1151,9 +1154,9 @@ export function Workspace(props: WorkspaceProps) {
       {!panel && <StatusDot status={tab.status} theme={theme()} />}
       {symbol ? <Icon name={PANEL_ICONS[tab.id.slice(6)] ?? "file"} color={ink} size={space(13, theme().scale)} /> :
         renaming()?.id === tab.id ? <Input testID="tab-rename-input" accessibilityLabel="Tab title" placeholder="Tab title" value={renameTitle()} autoCorrect={false}
-          ref={(node) => node.focus()} onChange={(value) => renameTitle.set(value)} onSubmit={saveRename} onBlur={saveRename}
+          ref={(node) => node.focus()} onChange={({ value }) => renameTitle.set(value)} onSubmit={saveRename} onBlur={saveRename}
           style={{ fontFamily: theme().family, fontSize: M.tabFont * theme().scale, color: theme().palette.text, width: space(150, theme().scale), paddingHorizontal: 4, paddingVertical: 1, borderRadius: 4, backgroundColor: theme().palette.bg }} /> :
-        <Text numberOfLines={1} style={{ fontFamily: theme().family, fontSize: M.tabFont * theme().scale, fontWeight: active ? "500" : "400", flexShrink: 1, color: ink }}>{remoteMark(tab, shownTitle)}</Text>}
+        <Text style={{ fontFamily: theme().family, fontSize: M.tabFont * theme().scale, fontWeight: active ? "500" : "400", flexShrink: 1, color: ink, numberOfLines: 1 }}>{remoteMark(tab, shownTitle)}</Text>}
       {!pane?.locked && !symbol && <View testID={`tab-close-${tab.id}`} role="button" tooltip={keyHint("Close tab", "closeTab", "mod+w")} accessibilityLabel={`Close ${tab.title}`} onPress={() => close(tab.id)}
         style={{ width: space(M.tabClose, theme().scale), height: space(M.tabClose, theme().scale), borderRadius: 8, alignItems: "center", justifyContent: "center", opacity: active || hovered() === tab.id ? 1 : 0 }}
         hoverStyle={{ backgroundColor: theme().palette.divider }}><Icon name="close" size={10} color={theme().palette.muted} /></View>}
@@ -1182,18 +1185,18 @@ export function Workspace(props: WorkspaceProps) {
   const modeName = () => customization.state().mods.find((mod) => mod.id === workspaceMod()?.id)?.name ?? interfaceLayout().name;
 
   return (
-    <View testID="workspace" ref={(node) => { root = node; }} focusable={true} onLayout={(bounds) => width.set(bounds.size.width)} style={{ flex: 1, backgroundColor: theme().palette.bg }}>
+    <View testID="workspace" ref={(node) => { root = node; }} onLayout={({ bounds }) => width.set(bounds.size.width)} style={{ flex: 1, backgroundColor: theme().palette.bg }}>
       <CustomizationFrame layout={interfaceLayout} custom={customInterface} theme={theme}
         projectId={projectId} workspace={workspaceContext} title={() => `${panelState.projectLabel()} · ${modeName()}`}
         titleActions={modNavigation}
         onCommand={(id) => commands.dispatch(id)} onAction={(key, request) => void addinAction(key, request)}
         onEdit={() => void customization.edit()} onReset={() => void customization.reset()}>
-      <View testID="dock-container" onLayout={(bounds) => containerHeight.set(bounds.size.height)} style={{ flex: 1, minHeight: 0, alignItems: "center", paddingBottom: snapshot().focusMode && snapshot().focusCentered ? containerHeight() * M.focusBottomMargin : 0 }}>
-        <View style={{ flex: 1, width: "100%", maxWidth: snapshot().focusMode && snapshot().focusCentered ? M.focusMaxWidth : undefined }} onLayout={(bounds) => measure(bounds.size)}>
+      <View testID="dock-container" onLayout={({ bounds }) => containerHeight.set(bounds.size.height)} style={{ flex: 1, minHeight: 0, alignItems: "center", paddingBottom: snapshot().focusMode && snapshot().focusCentered ? containerHeight() * M.focusBottomMargin : 0 }}>
+        <View style={{ flex: 1, width: "100%", maxWidth: snapshot().focusMode && snapshot().focusCentered ? M.focusMaxWidth : undefined }} onLayout={({ bounds }) => measure(bounds.size)}>
           {dockReady() && <DockArea testID="workspace-dock" style={{ flex: 1, backgroundColor: theme().palette.panel }} layout={dock()!} compact={false} dividerSize={M.divider}
             panels={panelIds(dock()!.center).map((id) => ({ id, closable: false, zoomable: false, visible: !workspaceTabs() && !snapshot().focusMode || shownDockTabs().has(id) }))}
-            onLayoutChange={edit}
-            onDragChange={(active) => { dragging.set(active); if (active) { hovered.set(null); freeze(); } else thaw(); }}
+            onLayoutChange={({ layout }) => edit(layout)}
+            onDragChange={({ dragging: active }) => { dragging.set(active); if (active) { hovered.set(null); freeze(); } else thaw(); }}
             tabBarStyle={{ height: interfaceLayout().tabBar === "hidden" ? 0 : header(), flexDirection: "row", backgroundColor: theme().palette.panel, borderBottomWidth: 1, borderColor: theme().palette.divider, overflow: "hidden" }}
             tabStyle={{ padding: 0, minWidth: 0 }}
             contentStyle={{ flex: 1, backgroundColor: theme().palette.bg }}
@@ -1203,24 +1206,28 @@ export function Workspace(props: WorkspaceProps) {
             draggableTabBars={topPaneFrames(dock()!.center, measured()).flatMap((pane) => pane.id === undefined ? [] : [pane.id])}
             renderTabBarPrefix={(id) => <View desktop={{ windowDrag: true }} style={{ width: controlInset(id), height: header(), flexShrink: 0 }} />}
             renderTabBarSuffix={(id) => paneControls(id)}
-            renderDropIndicator={(drop) => <View pointerEvents="none" accessible={false}
+            renderDropIndicator={(drop) => <View accessible={false}
               style={{ flex: 1, margin: drop.side || drop.index !== undefined ? 0 : space(8, theme().scale),
                 borderRadius: drop.index !== undefined ? 1 : 3,
                 borderWidth: drop.index !== undefined ? 0 : 1,
                 borderColor: `${theme().palette.cyan}66`,
-                backgroundColor: drop.index !== undefined ? theme().palette.cyan : `${theme().palette.cyan}20` }} />}
+                backgroundColor: drop.index !== undefined ? theme().palette.cyan : `${theme().palette.cyan}20`, pointerEvents: "none" }} />}
             renderDragPreview={(tab) => <View style={{ paddingHorizontal: 12, paddingVertical: 7, borderWidth: 1, borderColor: theme().palette.cyan, backgroundColor: theme().palette.panel }}><Text style={textStyle()}>{findPanel(snapshot(), tab.panel) ? displayTitle(findPanel(snapshot(), tab.panel)!) : tab.panel}</Text></View>}
             renderTab={(tab) => <View testID={`tab:${tab.panel}`} ref={(node) => props.onViewRef?.(`tab:${tab.panel}`, node)}
-              onLayout={(bounds) => measureTab(tab.group, tab.panel, bounds.size.width)}
+              onLayout={({ bounds }) => measureTab(tab.group, tab.panel, bounds.size.width)}
               onPress={(event) => tab.panel.startsWith("empty:") ? action(() => session.selectPane(tab.group))
                 : event?.clickCount === 2 && renameable(tab.panel) ? startRename(findPanel(snapshot(), tab.panel)!) : select(tab.panel)} onContextMenu={() => tabMenu(tab.panel)}
               style={{ flexDirection: "row", alignItems: "center" }}>
               {!tab.panel.startsWith("empty:") && tabCell(findPanel(snapshot(), tab.panel) ?? { id: tab.panel, title: tab.panel, kind: "empty" }, tab.active)}
             </View>}
-            renderPanel={(panel) => <View ref={(node) => { bodyRefs.set(panel.id, node); props.onViewRef?.(`panel:${panel.id}`, node); }} focusable={true} testID={`pane-${paneOf(panel.id)?.id}`} style={{ flex: 1, minHeight: 0 }}
+            renderPanel={(panel) => {
+              // The add-in this panel shows, if any. Read through a computed: a customization snapshot that
+              // leaves it as it was (every one at startup) must not build the panel's content again.
+              const addin = computed(() => panel.id.startsWith("panel:") ? interfaceLayout().panels[panel.id.slice(6)] : undefined);
+              return <View ref={(node) => { bodyRefs.set(panel.id, node); props.onViewRef?.(`panel:${panel.id}`, node); }} focusable={true} testID={`pane-${paneOf(panel.id)?.id}`} style={{ flex: 1, minHeight: 0 }}
               onPress={() => { action(() => panel.id.startsWith("empty:") ? session.selectPane(Number(panel.id.slice(6))) : session.selectPanel(panel.id)); focusActive(); }}>
-              {panel.id.startsWith("panel:") && interfaceLayout().panels[panel.id.slice(6)] ?
-                <AddinTab addin={{ key: interfaceLayout().panels[panel.id.slice(6)].addin, view: interfaceLayout().panels[panel.id.slice(6)].view, args: interfaceLayout().panels[panel.id.slice(6)].args ?? null }}
+              {addin() ?
+                <AddinTab addin={{ key: addin()!.addin, view: addin()!.view, args: addin()!.args ?? null }}
                   projectId={projectId} workspace={workspaceContext} theme={theme} visible={() => isVisible(panel.id)} onAction={(key, request) => void addinAction(key, request)} /> :
                 remoteProject() && panel.id.startsWith("panel:") && remotePanelUnavailable(panel.id.slice(6)) ?
                 <RemoteUnavailable hostLabel={remoteHostLabel(remote.data(), remoteProjectKey(projectId())!.host)} panel={panel.id.slice(6)} theme={theme} /> :
@@ -1302,14 +1309,14 @@ export function Workspace(props: WorkspaceProps) {
                   theme={theme} diagnostics={props.diagnostics}
                   visible={isVisible(panel.id)}
                   onPress={() => { action(() => panel.id.startsWith("empty:") ? session.selectPane(Number(panel.id.slice(6))) : session.selectPanel(panel.id)); focusActive(); }} />}
-            </View>} />}
+            </View>; }} />}
         </View>
       </View>
       {vimBar() && <View testID="vim-open-bar" style={{ gap: 4, paddingHorizontal: space(10, theme().scale), paddingVertical: space(6, theme().scale), borderTopWidth: 1, borderColor: theme().palette.divider, backgroundColor: theme().palette.panel }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
           <Text style={mutedStyle()}>Open in Vim</Text>
           <Input testID="vim-open-path" accessibilityLabel="File path" placeholder="File path in the selected project or worktree" value={vimPath()} autoCorrect={false}
-            ref={(node) => node.focus()} onChange={(value) => void suggestVim(value)} onSubmit={() => submitVim()}
+            ref={(node) => node.focus()} onChange={({ value }) => void suggestVim(value)} onSubmit={() => submitVim()}
             style={{ ...textStyle(), flex: 1, minWidth: 0, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, backgroundColor: theme().palette.bg }} />
           <Button testID="vim-open-submit" disabled={!vimPath()} onPress={() => submitVim()}><Text style={textStyle()}>Open</Text></Button>
           <Button testID="vim-open-cancel" onPress={() => { vimBar.set(false); focusActive(); }}><Text style={textStyle()}>Cancel</Text></Button>
@@ -1335,7 +1342,7 @@ export function Workspace(props: WorkspaceProps) {
       </CustomizationFrame>
       <WindowChrome state={chrome} panes={[]} />
       {customization.error() !== "" && <Overlay testID="customization-error" margin={8} style={{ bottom: 28, right: 8, width: 520, maxWidth: "100%", padding: 10, gap: 6, backgroundColor: theme().palette.panel, borderWidth: 1, borderColor: theme().palette.gold }}>
-        <Text role="alert" selectable={true} style={{ ...textStyle(), color: theme().palette.gold }}>{customization.error()}</Text>
+        <Text role="alert" style={{ ...textStyle(), color: theme().palette.gold, userSelect: "text" }}>{customization.error()}</Text>
         <View style={{ flexDirection: "row", gap: 12 }}>
           <View role="button" accessibilityLabel="Edit interface" onPress={() => void customization.edit()}><Text style={textStyle()}>Edit interface</Text></View>
           <View role="button" accessibilityLabel="Reset interface" onPress={() => void customization.reset()}><Text style={textStyle()}>Reset interface</Text></View>
@@ -1343,7 +1350,7 @@ export function Workspace(props: WorkspaceProps) {
       </Overlay>}
       {closedTab() && <Overlay testID="tab-closed-notice" margin={8}
         style={{ top: notice() !== "" ? 75 : 31, right: 8, width: 420, maxWidth: "100%", padding: 8, backgroundColor: theme().palette.panel, borderColor: theme().palette.divider, borderWidth: 1, flexDirection: "row", alignItems: "center", gap: 10 }}>
-        <Text testID="tab-closed-message" role="text" numberOfLines={2} style={{ ...textStyle(), flex: 1 }}>{`Closed ${closedTab()!.title}. ${closedTab()!.kind === "shell" ? "The shell keeps running." : "The chat stays in Sessions."}`}</Text>
+        <Text testID="tab-closed-message" role="text" style={{ ...textStyle(), flex: 1, numberOfLines: 2 }}>{`Closed ${closedTab()!.title}. ${closedTab()!.kind === "shell" ? "The shell keeps running." : "The chat stays in Sessions."}`}</Text>
         <View testID="tab-closed-undo" role="button" accessibilityLabel="Undo" onPress={undoClose}><Text style={{ ...textStyle(), color: theme().palette.cyan }}>Undo</Text></View>
         {closedTab()!.end && <View testID="tab-closed-end" role="button" accessibilityLabel={closedTab()!.kind === "shell" ? "End the shell" : "Stop the chat"} onPress={endClosed}>
           <Text style={{ ...textStyle(), color: theme().palette.gold }}>{closedTab()!.kind === "shell" ? "End shell" : "Stop chat"}</Text></View>}
@@ -1360,7 +1367,7 @@ export function Workspace(props: WorkspaceProps) {
           {commands.stripItems().map((tab, index) => <View testID={`all-tabs:${tab.id}`} role="menuitem" accessibilityLabel={tab.title} accessibilityState={{ selected: commands.stripIndex() === index }} onPress={() => commands.activateStrip(index)} style={{ padding: 8, backgroundColor: commands.stripIndex() === index ? theme().palette.divider : "transparent" }}><Text style={textStyle()}>{displayTitle(tab)}</Text></View>)}
         </View>
       </Overlay>}
-      {tabHint() && !frozen() && <Overlay pointerEvents="none" anchor={tabRefs.get(`pane:${tabHint()!.id}`)} placement="bottom" align="start" offset={4} style={{ paddingHorizontal: 8, paddingVertical: 5, backgroundColor: theme().palette.panelActive, borderRadius: 4 }}><Text style={textStyle()}>{tabHint()!.text}</Text></Overlay>}
+      {tabHint() && !frozen() && <Overlay anchor={tabRefs.get(`pane:${tabHint()!.id}`)} placement="bottom" align="start" offset={4} style={{ paddingHorizontal: 8, paddingVertical: 5, backgroundColor: theme().palette.panelActive, borderRadius: 4, pointerEvents: "none" }}><Text style={textStyle()}>{tabHint()!.text}</Text></Overlay>}
     </View>
   );
 }

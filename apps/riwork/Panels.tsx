@@ -1,10 +1,11 @@
-import { List, Scroll, Text, View, cleanup, context, effect, host, keymap, signal, type JSX, type YNode } from "nsh";
+import { List, Scroll, Text, View, cleanup, context, effect, host, keymap, signal, type JSX, type ViewRef } from "nsh";
 import { Button, Input, Switch } from "nsh/base";
 import { Menu } from "nsh/desktop";
 import { Chat, Sessions, Settings, Store, Tabs, type ChatSummary, type ProjectDto, type ProjectInspectionDto, type SettingsDto, type ShellSessionDto, type StoreState, type Subscription, type TabEntryDto, type TabsSnapshot, type TaskDto } from "riwork/native";
 import { EMPTY_STORE, countLabel, matches, projectRows, shellLabel, shellMatches, taskAge, taskCounts, taskDate, taskMatches, taskRows, taskStatusLabel, taskWorktree, visibleWorktrees, worktreeLabel, type ListPanel, type ProjectOrder, type ProjectTreeRow, type TaskFilter, type TaskRow } from "./panel_model";
 import { DEFAULT_THEME, space, type InterfaceTheme } from "./appearance";
 import { Icon, type IconName } from "./Icon";
+import { focusView } from "./keyboard";
 import { PANEL } from "./panel_layout";
 import { KitButton, Segmented, StatusPill, buttonLook, cardStyle, focusRing, searchBox, switchParts, type ButtonKind, type Tone } from "./PanelKit";
 
@@ -110,7 +111,7 @@ export function createPanelController(options: PanelOptions) {
     const prior = projectPanel();
     void setProjectPanel({ ...prior, pinned: prior.pinned.includes(id) ? prior.pinned.filter((pin) => pin !== id) : [...prior.pinned, id] });
   }
-  const searches = new Map<string, YNode>();
+  const searches = new Map<string, ViewRef>();
   let generation = 0;
   let alive = true;
   let tabSubscription: Subscription | undefined;
@@ -308,13 +309,13 @@ function PanelSearch(props: { controller: PanelController; panel: ListPanel; sur
   const c = props.controller;
   const noun = props.panel === "shells" ? "sessions" : props.panel;
   const focused = signal(false);
-  let input: YNode | undefined;
+  let input: ViewRef | undefined;
   cleanup(() => c.searches.delete(props.surface));
   return <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space(8, theme().scale), paddingHorizontal: space(12, theme().scale), paddingBottom: space(8, theme().scale) }}>
     <View style={{ ...searchBox(theme, focused()).style, flexGrow: 1, flexShrink: 1, flexBasis: space(100, theme().scale) }} hoverStyle={searchBox(theme, focused()).hoverStyle} onPress={() => input?.focus()}>
       <Icon name="search" size={text(13)} color={muted()} />
       <Input testID={`search:${props.surface}`} accessibilityLabel={`Search ${noun}`} placeholder="Search  ⌘F" value={c.query()}
-        onChange={(value) => c.query.set(value)} ref={(node) => { input = node; c.searches.set(props.surface, node); }}
+        onChange={({ value }) => c.query.set(value)} ref={(node) => { input = node; c.searches.set(props.surface, node); }}
         onFocus={() => focused.set(true)} onBlur={() => focused.set(false)}
         style={{ flex: 1, minWidth: 0, padding: 0, backgroundColor: "transparent", color: ink(), fontFamily: theme().family, fontSize: text(11) }} />
       {c.query() !== "" && <ToolbarCommand id={`clear-search:${props.surface}`} label="Clear the search" icon="close" small={true} onPress={() => { c.query.set(""); input?.focus(); }}>×</ToolbarCommand>}
@@ -335,8 +336,8 @@ function ToolbarCommand(props: { id?: string; label: string; icon?: IconName; di
 function Header(props: { title: string; count: number; total: number; noun: string; project?: string; children?: JSX.Element }) {
   return <View style={{ minHeight: space(PANEL.header, theme().scale), paddingHorizontal: space(PANEL.inset, theme().scale), flexDirection: "row", alignItems: "center", gap: space(8, theme().scale) }}>
     <View style={{ flex: 1, minWidth: 0, gap: 1 }}>
-      <Text numberOfLines={1} style={{ fontFamily: theme().family, fontSize: text(13), fontWeight: "600", color: ink() }}>{props.title}</Text>
-      <Text numberOfLines={1} testID={`count:${props.noun}`} style={{ fontFamily: theme().family, fontSize: text(10), color: muted() }}>{`${countLabel(props.count, props.total, props.noun)}${props.project ? ` · ${props.project}` : ""}`}</Text>
+      <Text style={{ fontFamily: theme().family, fontSize: text(13), fontWeight: "600", color: ink(), numberOfLines: 1 }}>{props.title}</Text>
+      <Text testID={`count:${props.noun}`} style={{ fontFamily: theme().family, fontSize: text(10), color: muted(), numberOfLines: 1 }}>{`${countLabel(props.count, props.total, props.noun)}${props.project ? ` · ${props.project}` : ""}`}</Text>
     </View>
     {props.children && <View style={{ flexDirection: "row", alignItems: "center", gap: 2 }}>{props.children}</View>}
   </View>;
@@ -359,7 +360,7 @@ function ProjectRow(props: { item: () => ProjectTreeRow; controller: PanelContro
   // branch and every identity reactive instead of capturing the first item.
   // Projects move with "Move to folder…"; nothing in the panel takes a drop.
   return <>{props.item().kind === "empty" ?
-    <View style={{ paddingLeft: space(6 + props.item().depth * 16, theme().scale), paddingVertical: space(7, theme().scale) }}><Text numberOfLines={1} style={{ fontFamily: theme().family, fontSize: text(10), color: muted() }}>Empty. Move projects here from their menu.</Text></View> :
+    <View style={{ paddingLeft: space(6 + props.item().depth * 16, theme().scale), paddingVertical: space(7, theme().scale) }}><Text style={{ fontFamily: theme().family, fontSize: text(10), color: muted(), numberOfLines: 1 }}>Empty. Move projects here from their menu.</Text></View> :
     props.item().kind === "folder" ? <FolderRow item={props.item} controller={props.controller} /> : <ProjectItemRow item={props.item} controller={props.controller} />}</>;
 }
 
@@ -378,12 +379,12 @@ function FolderRow(props: { item: () => ProjectTreeRow; controller: PanelControl
       { label: "Remove folder", onSelect: () => void c.run(() => Store.removeFolder(id())) },
     ]);
   }
-  return <View onHoverIn={() => hovering.set(true)} onHoverOut={() => hovering.set(false)} onContextMenu={menu}
+  return <View onMouseEnter={() => hovering.set(true)} onMouseLeave={() => hovering.set(false)} onContextMenu={menu}
     style={{ paddingLeft: space(6 + current().depth * 16, theme().scale), paddingRight: 6, height: space(30, theme().scale), flexDirection: "row", alignItems: "center", gap: 3 }}>
     <View testID={current().id} role="button" focusable={true} accessibilityLabel={current().name} accessibilityState={{ expanded: !c.collapsed().has(id()) }} onPress={() => c.toggleFolder(id())}
       style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: space(6, theme().scale), height: "100%", borderRadius: space(6, theme().scale) }} focusStyle={rowFocus()}>
       <Icon name={c.collapsed().has(id()) ? "right" : "down"} size={text(10)} color={muted()} />
-      <Text numberOfLines={1} style={{ flex: 1, fontFamily: theme().family, fontSize: text(10), fontWeight: "600", color: muted() }}>{current().name}</Text>
+      <Text style={{ flex: 1, fontFamily: theme().family, fontSize: text(10), fontWeight: "600", color: muted(), numberOfLines: 1 }}>{current().name}</Text>
       <Text style={{ fontFamily: theme().family, fontSize: text(10), fontVariant: ["tabular-nums"], color: muted() }}>{String(current().count)}</Text>
     </View>
     {current().folder && hovering() && <>
@@ -431,16 +432,16 @@ function ProjectItemRow(props: { item: () => ProjectTreeRow; controller: PanelCo
   }
   // The pointer brings out every row action; the selected row keeps only pin and the menu, which
   // holds the others too, so the keyboard can still reach them.
-  return <View onHoverIn={() => hovering.set(true)} onHoverOut={() => hovering.set(false)} onContextMenu={menu}
+  return <View onMouseEnter={() => hovering.set(true)} onMouseLeave={() => hovering.set(false)} onContextMenu={menu}
     style={{ borderRadius: space(8, theme().scale), backgroundColor: selected() ? theme().palette.panelActive : "transparent" }} hoverStyle={{ backgroundColor: theme().palette.panelActive }}>
     <View style={{ flexDirection: "row", alignItems: "center", paddingRight: 2 }}>
       <Button testID={`project-${project().id}`} accessibilityLabel={project().name} selected={selected()} disabled={c.pending()} onPress={() => void c.activate(project())}
         style={{ flex: 1, minWidth: 0, minHeight: space(32, theme().scale), justifyContent: "center", paddingLeft: space(6 + props.item().depth * 16, theme().scale), paddingVertical: space(6, theme().scale), gap: 2, borderRadius: space(8, theme().scale) }} focusStyle={rowFocus()}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
           {pinned() && <Icon name="pin" size={text(12)} color={accent()} />}
-          <Text numberOfLines={1} style={{ flex: 1, fontFamily: theme().family, fontSize: text(12), fontWeight: selected() ? "600" : "400", color: ink() }}>{project().name}</Text>
+          <Text style={{ flex: 1, fontFamily: theme().family, fontSize: text(12), fontWeight: selected() ? "600" : "400", color: ink(), numberOfLines: 1 }}>{project().name}</Text>
         </View>
-        {summary() !== "" && <Text numberOfLines={1} testID={`project-summary:${project().id}`} style={{ fontFamily: theme().family, fontSize: text(10), color: muted() }}>{summary()}</Text>}
+        {summary() !== "" && <Text testID={`project-summary:${project().id}`} style={{ fontFamily: theme().family, fontSize: text(10), color: muted(), numberOfLines: 1 }}>{summary()}</Text>}
       </Button>
       {(selected() || hovering()) && <View style={{ flexDirection: "row", alignItems: "center", gap: 0 }}>
         <ToolbarCommand id={`pin-project:${project().id}`} icon="pin" label={pinned() ? "Unpin project" : "Pin project"} selected={pinned()} disabled={c.panelSaving()} onPress={() => c.pinProject(project().id)} />
@@ -490,7 +491,7 @@ function Projects(props: { controller: PanelController; surface: string; footer?
       { label: c.order() === "name" ? "Z to A" : c.order() === "live" ? "Most live sessions first" : "Newest first", checked: c.descending(), disabled: c.sortPending(), onSelect: () => void c.setOrder(c.order(), true) },
     ]);
   }
-  return <View testID="projects-panel" onLayout={(event) => width.set(event.size.width)} style={{ flex: 1, minHeight: 0, backgroundColor: theme().palette.panel }}>
+  return <View testID="projects-panel" onLayout={({ bounds }) => width.set(bounds.size.width)} style={{ flex: 1, minHeight: 0, backgroundColor: theme().palette.panel }}>
     <Header title="Projects" count={c.query().trim() ? rows().filter((row) => row.kind === "project").length : c.state().projects.length} total={c.state().projects.length} noun="project">
       <ToolbarCommand id="sort-projects" icon="sort" label="Sort projects" onPress={sortMenu} />
       <ToolbarCommand id="new-folder" icon="folder" label="New folder" selected={rootFolderForm()} onPress={() => c.editor.set(rootFolderForm() ? null : { kind: "folder", name: "" })} />
@@ -581,13 +582,13 @@ function Worktrees(props: { controller: PanelController; surface: string }) {
       <View style={{ paddingTop: 1 }}><Icon name={tree().repositoryRoot ? "worktrees" : "folder"} size={text(13)} color={selected() ? accent() : muted()} /></View>
       <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: space(6, s()), minWidth: 0 }}>
-          <Text numberOfLines={1} style={{ flexShrink: 1, fontFamily: family(), fontSize: text(11), fontWeight: selected() ? "600" : "400", color: ink() }}>{name(tree())}</Text>
-          {repository(tree()) !== "" && <Text numberOfLines={1} style={{ flexShrink: 0, fontFamily: family(), fontSize: text(10), color: muted() }}>{repository(tree())}</Text>}
+          <Text style={{ flexShrink: 1, fontFamily: family(), fontSize: text(11), fontWeight: selected() ? "600" : "400", color: ink(), numberOfLines: 1 }}>{name(tree())}</Text>
+          {repository(tree()) !== "" && <Text style={{ flexShrink: 0, fontFamily: family(), fontSize: text(10), color: muted(), numberOfLines: 1 }}>{repository(tree())}</Text>}
           {tree().isPrimary && name(tree()) === tree().branch && <Text style={{ flexShrink: 0, fontFamily: family(), fontSize: text(10), color: muted() }}>primary</Text>}
         </View>
         {(missing() || meta() !== "") && <View style={{ flexDirection: "row", alignItems: "center", gap: space(6, s()), minWidth: 0 }}>
           {missing() && <StatusPill theme={theme} tone="needs" label="Missing on disk" inline={true} />}
-          {meta() !== "" && <Text numberOfLines={1} style={{ flexShrink: 1, minWidth: 0, fontFamily: family(), fontSize: text(10), color: muted() }}>{meta()}</Text>}
+          {meta() !== "" && <Text style={{ flexShrink: 1, minWidth: 0, fontFamily: family(), fontSize: text(10), color: muted(), numberOfLines: 1 }}>{meta()}</Text>}
         </View>}
       </View>
       {selected() && <View style={{ paddingTop: 1 }}><Icon name="check" size={text(12)} color={accent()} /></View>}
@@ -604,7 +605,7 @@ function TaskDetail(props: { controller: PanelController; task: () => TaskDto })
   return <View testID="task-detail" style={{ borderTopWidth: 1, borderTopColor: theme().palette.divider, paddingHorizontal: space(12, s()), paddingTop: space(10, s()), paddingBottom: space(10, s()), gap: space(8, s()) }}>
     <View style={{ flexDirection: "row", alignItems: "flex-start", gap: space(6, s()) }}>
       <View style={{ paddingTop: 1 }}><Icon name={statusIcon(task().status)} size={text(14)} color={statusColor(task().status)} /></View>
-      <Text selectable={true} numberOfLines={4} style={{ flex: 1, minWidth: 0, fontFamily: theme().family, fontSize: text(12), fontWeight: "600", color: ink() }}>{task().title}</Text>
+      <Text style={{ flex: 1, minWidth: 0, fontFamily: theme().family, fontSize: text(12), fontWeight: "600", color: ink(), userSelect: "text", numberOfLines: 4 }}>{task().title}</Text>
       <ToolbarCommand id="close-task-detail" icon="close" label="Close task detail" onPress={() => c.selectTask(null)} />
     </View>
     <Segmented theme={theme} id="task-status" role="radio" accessibilityLabel="Task status"
@@ -615,18 +616,18 @@ function TaskDetail(props: { controller: PanelController; task: () => TaskDto })
       style={{ ...buttonLook(theme).style, alignSelf: "flex-start", maxWidth: "100%" }}
       hoverStyle={buttonLook(theme).hoverStyle} focusStyle={buttonLook(theme).focusStyle} disabledStyle={buttonLook(theme).disabledStyle}>
       <Icon name="worktrees" size={text(12)} color={muted()} />
-      <Text numberOfLines={1} style={{ ...buttonLook(theme).label, flexShrink: 1, color: task().worktreeId ? ink() : muted() }}>{taskWorktree(task(), c.state())}</Text>
+      <Text style={{ ...buttonLook(theme).label, flexShrink: 1, color: task().worktreeId ? ink() : muted(), numberOfLines: 1 }}>{taskWorktree(task(), c.state())}</Text>
       <Icon name="down" size={text(10)} color={muted()} />
     </Button>
     <If when={task().details.trim() !== ""}>
       <Scroll testID="task-detail-text" style={{ maxHeight: space(132, s()) }}>
-        <Text selectable={true} style={{ fontFamily: theme().family, fontSize: text(11), color: ink() }}>{task().details}</Text>
+        <Text style={{ fontFamily: theme().family, fontSize: text(11), color: ink(), userSelect: "text" }}>{task().details}</Text>
       </Scroll>
     </If>
     {/* The task's ID is for tools, not for reading: it is in the dates' tooltip. */}
     <View testID="task-detail-dates" style={{ alignSelf: "flex-start", maxWidth: "100%" }}
-      tooltip={<View style={{ padding: 7, borderRadius: 6, backgroundColor: theme().palette.panelActive }}><Text selectable={true} style={{ fontFamily: theme().monoFamily, fontSize: text(9), color: ink() }}>{task().id}</Text></View>}>
-      <Text numberOfLines={1} style={{ fontFamily: theme().family, fontSize: text(10), color: muted() }}>{`Created ${taskDate(task().createdAt, c.now())} · updated ${taskAge(task().updatedAt, c.now())}`}</Text>
+      tooltip={<View style={{ padding: 7, borderRadius: 6, backgroundColor: theme().palette.panelActive }}><Text style={{ fontFamily: theme().monoFamily, fontSize: text(9), color: ink(), userSelect: "text" }}>{task().id}</Text></View>}>
+      <Text style={{ fontFamily: theme().family, fontSize: text(10), color: muted(), numberOfLines: 1 }}>{`Created ${taskDate(task().createdAt, c.now())} · updated ${taskAge(task().updatedAt, c.now())}`}</Text>
     </View>
   </View>;
 }
@@ -639,7 +640,7 @@ function TaskListRow(props: { item: () => TaskRow; controller: PanelController }
 function TaskSection(props: { item: () => TaskRow }) {
   const section = () => props.item() as Extract<TaskRow, { kind: "section" }>;
   return <View testID={section().id} style={{ height: space(28, theme().scale), paddingTop: space(6, theme().scale), paddingHorizontal: space(6, theme().scale), flexDirection: "row", alignItems: "center", gap: 6 }}>
-    <Text numberOfLines={1} style={{ flex: 1, fontFamily: theme().family, fontSize: text(10), fontWeight: "600", color: muted() }}>{taskStatusLabel(section().status)}</Text>
+    <Text style={{ flex: 1, fontFamily: theme().family, fontSize: text(10), fontWeight: "600", color: muted(), numberOfLines: 1 }}>{taskStatusLabel(section().status)}</Text>
     <Text style={{ fontFamily: theme().family, fontSize: text(9), color: muted() }}>{String(section().count)}</Text>
   </View>;
 }
@@ -660,8 +661,8 @@ function TaskItem(props: { item: () => TaskRow; controller: PanelController }) {
     </Button>
     <Button testID={`task-${task().id}`} accessibilityLabel={`${task().title} · ${taskStatusLabel(task().status)}`} selected={selected()} onPress={() => c.selectTask(task().id)}
       style={{ flex: 1, minWidth: 0, paddingRight: space(6, theme().scale), paddingVertical: space(6, theme().scale), gap: 2, borderRadius: space(8, theme().scale) }} focusStyle={rowFocus()}>
-      <Text numberOfLines={2} style={{ fontFamily: theme().family, fontSize: text(11), color: done() ? muted() : ink() }}>{task().title}</Text>
-      <Text numberOfLines={1} style={{ fontFamily: theme().family, fontSize: text(10), color: muted() }}>{meta()}</Text>
+      <Text style={{ fontFamily: theme().family, fontSize: text(11), color: done() ? muted() : ink(), numberOfLines: 2 }}>{task().title}</Text>
+      <Text style={{ fontFamily: theme().family, fontSize: text(10), color: muted(), numberOfLines: 1 }}>{meta()}</Text>
     </Button>
   </View>;
 }
@@ -802,7 +803,7 @@ function Shells(props: { controller: PanelController; surface: string }) {
       <Text style={{ fontFamily: theme().family, fontSize: text(13), fontWeight: "600", color: ink() }}>{`End ${ending()!.ids.length} project terminal${ending()!.ids.length === 1 ? "" : "s"}?`}</Text>
       <Text style={{ fontFamily: theme().family, fontSize: text(11), color: muted() }}>Running processes and agents stop. Unsaved terminal output and temporary shell uploads are deleted. Chats and orchestrator terminals are kept.</Text>
       <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 8 }}>
-        <Button testID="end-terminals-cancel" ref={(node) => node.focus()} onPress={() => ending.set(null)} style={buttonLook(theme).style} hoverStyle={buttonLook(theme).hoverStyle} focusStyle={buttonLook(theme).focusStyle}><Text style={buttonLook(theme).label}>Cancel</Text></Button>
+        <Button testID="end-terminals-cancel" ref={(node) => focusView(node)} onPress={() => ending.set(null)} style={buttonLook(theme).style} hoverStyle={buttonLook(theme).hoverStyle} focusStyle={buttonLook(theme).focusStyle}><Text style={buttonLook(theme).label}>Cancel</Text></Button>
         <Button testID="end-terminals-confirm-action" onPress={endTerminals} style={buttonLook(theme, "danger").style} hoverStyle={buttonLook(theme, "danger").hoverStyle} focusStyle={buttonLook(theme, "danger").focusStyle}><Text style={buttonLook(theme, "danger").label}>{`End ${ending()!.ids.length} terminals`}</Text></Button>
       </View>
     </View>}
@@ -815,10 +816,10 @@ function Shells(props: { controller: PanelController; surface: string }) {
     </PanelSearch>
     {/* One line a person can act on; what the chat host said is under it and in its tooltip. */}
     {c.catalogNotice() !== "" && <View testID="sessions-catalog-notice-row" role="alert" style={{ flexDirection: "row", alignItems: "center", gap: space(8, s()), marginHorizontal: space(12, s()), marginBottom: space(8, s()) }}
-      tooltip={<View style={{ maxWidth: space(320, s()), padding: 7, borderRadius: 6, backgroundColor: theme().palette.panelActive }}><Text selectable={true} style={{ fontFamily: theme().monoFamily, fontSize: text(9), color: ink() }}>{c.catalogNotice()}</Text></View>}>
+      tooltip={<View style={{ maxWidth: space(320, s()), padding: 7, borderRadius: 6, backgroundColor: theme().palette.panelActive }}><Text style={{ fontFamily: theme().monoFamily, fontSize: text(9), color: ink(), userSelect: "text" }}>{c.catalogNotice()}</Text></View>}>
       <View style={{ flex: 1, minWidth: 0, gap: 1 }}>
         <Text testID="sessions-catalog-notice" accessibilityLabel={c.catalogNotice()} style={{ fontFamily: theme().family, fontSize: text(10), fontWeight: "500", color: theme().palette.danger }}>Chat history is unavailable.</Text>
-        <Text numberOfLines={1} ellipsizeMode="middle" style={{ fontFamily: theme().family, fontSize: text(9), color: muted() }}>{c.catalogNotice().replace(/^Chat history unavailable:\s*(Error:\s*)?/, "")}</Text>
+        <Text style={{ fontFamily: theme().family, fontSize: text(9), color: muted(), numberOfLines: 1, textOverflow: "ellipsis-middle" }}>{c.catalogNotice().replace(/^Chat history unavailable:\s*(Error:\s*)?/, "")}</Text>
       </View>
       <Command id="sessions-catalog-retry" label="Retry" disabled={c.catalogLoading()} onPress={() => void c.refreshCatalog()} />
     </View>}
@@ -856,10 +857,10 @@ function Shells(props: { controller: PanelController; surface: string }) {
       style={rowStyle()} hoverStyle={{ backgroundColor: theme().palette.panelActive }} focusStyle={rowFocus()} selectedStyle={{ backgroundColor: theme().palette.panelActive }}>
       <View style={{ paddingTop: 1 }}><Icon name="chat" size={text(13)} color={muted()} /></View>
       <View style={{ flex: 1, minWidth: 0, gap: space(4, s()) }}>
-        <Text numberOfLines={1} style={{ fontFamily: theme().family, fontSize: text(11), color: ink() }}>{chat().title.trim() || "Untitled chat"}</Text>
+        <Text style={{ fontFamily: theme().family, fontSize: text(11), color: ink(), numberOfLines: 1 }}>{chat().title.trim() || "Untitled chat"}</Text>
         <View style={{ flexDirection: "row", alignItems: "center", gap: space(6, s()), minWidth: 0 }}>
           <StatusPill theme={theme} tone={tone()} label={status(chat())} inline={true} />
-          <Text numberOfLines={1} style={{ flexShrink: 1, minWidth: 0, fontFamily: theme().family, fontSize: text(10), color: muted() }}>{`${provider(chat())} · ${context(chat())}`}</Text>
+          <Text style={{ flexShrink: 1, minWidth: 0, fontFamily: theme().family, fontSize: text(10), color: muted(), numberOfLines: 1 }}>{`${provider(chat())} · ${context(chat())}`}</Text>
         </View>
       </View>
     </Button>;
@@ -882,11 +883,11 @@ function Shells(props: { controller: PanelController; surface: string }) {
         tooltip={where(shell().cwd)} hoverStyle={{ backgroundColor: theme().palette.panelActive }} focusStyle={rowFocus()} selectedStyle={{ backgroundColor: theme().palette.panelActive }}>
         <View style={{ paddingTop: 1 }}><Icon name="terminal" size={text(13)} color={tone()} /></View>
         <View style={{ flex: 1, minWidth: 0, gap: space(4, s()) }}>
-          <Text numberOfLines={1} style={{ fontFamily: theme().family, fontSize: text(11), color: shell().alive ? ink() : muted() }}>{c.titleForShell(shell())}</Text>
+          <Text style={{ fontFamily: theme().family, fontSize: text(11), color: shell().alive ? ink() : muted(), numberOfLines: 1 }}>{c.titleForShell(shell())}</Text>
           <View style={{ flexDirection: "row", alignItems: "center", gap: space(6, s()), minWidth: 0 }}>
             <StatusPill theme={theme} tone={shell().alive ? "done" : "neutral"} label={state()} inline={true} />
-            <Text numberOfLines={1} style={{ flexShrink: 1, minWidth: 0, fontFamily: shell().command ? theme().monoFamily : theme().family, fontSize: text(10), color: muted() }}>{meta()}</Text>
-            {c.tabForShell(shell().id)?.hidden && <Text numberOfLines={1} style={{ flexShrink: 0, fontFamily: theme().family, fontSize: text(10), color: muted() }}>· Hidden tab</Text>}
+            <Text style={{ flexShrink: 1, minWidth: 0, fontFamily: shell().command ? theme().monoFamily : theme().family, fontSize: text(10), color: muted(), numberOfLines: 1 }}>{meta()}</Text>
+            {c.tabForShell(shell().id)?.hidden && <Text style={{ flexShrink: 0, fontFamily: theme().family, fontSize: text(10), color: muted(), numberOfLines: 1 }}>· Hidden tab</Text>}
           </View>
         </View>
       </Button>
@@ -921,7 +922,7 @@ function ShellIntentContent(props: { controller: PanelController; shellId: strin
   return <View testID={`shell-intent:${props.shellId}`} style={{ padding: 16, gap: 8, backgroundColor: theme().palette.panel }}>
     <Text style={{ fontFamily: theme().family, fontSize: text(13), color: ink() }}>{shell() ? props.controller.titleForShell(shell()!) : "Shell"}</Text>
     <Text style={{ fontFamily: theme().family, fontSize: text(11), color: muted() }}>{shell()?.alive === false ? "This shell has exited." : "Opening terminal…"}</Text>
-    <Text selectable={true} style={{ fontFamily: theme().monoFamily, fontSize: text(11), color: muted() }}>{props.shellId}</Text>
+    <Text style={{ fontFamily: theme().monoFamily, fontSize: text(11), color: muted(), userSelect: "text" }}>{props.shellId}</Text>
     {shell() && <Text style={{ fontFamily: theme().family, fontSize: text(11), color: muted() }}>{`${shell()!.alive ? "Live" : "Exited"} · ${shell()!.cwd}`}</Text>}
   </View>;
 }
@@ -938,9 +939,9 @@ function FolderEditor(props: { controller: PanelController; editor: Extract<Edit
     });
   }
   return <View style={{ gap: 10 }}>
-    <Text numberOfLines={2} style={{ fontFamily: theme().family, fontSize: text(15), color: ink() }}>{props.editor.id ? "Rename folder" : props.editor.parent ? `New folder in ${c.folderPath(props.editor.parent)}` : "New folder"}</Text>
+    <Text style={{ fontFamily: theme().family, fontSize: text(15), color: ink(), numberOfLines: 2 }}>{props.editor.id ? "Rename folder" : props.editor.parent ? `New folder in ${c.folderPath(props.editor.parent)}` : "New folder"}</Text>
     <Text style={{ fontFamily: theme().family, fontSize: text(11), color: muted() }}>Group projects without moving their files.</Text>
-    <Input testID="folder-name" accessibilityLabel="Folder name" placeholder="Folder name" autoFocus={true} value={name()} onChange={(value) => name.set(value)} onSubmit={save} style={field()} focusStyle={fieldFocus()} />
+    <Input testID="folder-name" accessibilityLabel="Folder name" placeholder="Folder name" autoFocus={true} value={name()} onChange={({ value }) => name.set(value)} onSubmit={save} style={field()} focusStyle={fieldFocus()} />
     {error() !== "" && <Text style={{ color: theme().palette.danger, fontFamily: theme().family, fontSize: text(11) }}>{error()}</Text>}
     <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 6 }}>
       <Command label="Cancel" disabled={c.pending()} onPress={() => c.editor.set(null)} />
@@ -968,8 +969,8 @@ function TaskEditor(props: { controller: PanelController }) {
   }
   return <View style={{ gap: 10 }}>
     <Text style={{ fontFamily: theme().family, fontSize: text(13), fontWeight: "600", color: ink() }}>New task</Text>
-    <Input testID="task-title" accessibilityLabel="Task title" placeholder="Task title" autoFocus={true} value={title()} onChange={(value) => { title.set(value); error.set(""); }} onSubmit={save} style={field()} focusStyle={fieldFocus()} />
-    <Input testID="task-details" accessibilityLabel="Task details" placeholder="Details (optional)" multiline={true} autoCorrect={false} value={details()} onChange={(value) => details.set(value)} style={{ ...field(), minHeight: 90 }} focusStyle={fieldFocus()} />
+    <Input testID="task-title" accessibilityLabel="Task title" placeholder="Task title" autoFocus={true} value={title()} onChange={({ value }) => { title.set(value); error.set(""); }} onSubmit={save} style={field()} focusStyle={fieldFocus()} />
+    <Input testID="task-details" accessibilityLabel="Task details" placeholder="Details (optional)" multiline={true} autoCorrect={false} value={details()} onChange={({ value }) => details.set(value)} style={{ ...field(), minHeight: 90 }} focusStyle={fieldFocus()} />
     {error() !== "" && <Text style={{ color: theme().palette.danger, fontFamily: theme().family, fontSize: text(11) }}>{error()}</Text>}
     <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 6 }}>
       <Command label="Cancel" disabled={c.pending()} onPress={() => c.editor.set(null)} />
@@ -983,7 +984,7 @@ function ProjectEditor(props: { controller: PanelController }) {
   const inspection = signal<ProjectInspectionDto | null>(null), checking = signal(false), error = signal(""), initGit = signal(true);
   const followsName = signal(true);
   let alive = true, generation = 0, timer: number | undefined;
-  let pathInput: YNode | undefined;
+  let pathInput: ViewRef | undefined;
   cleanup(() => { alive = false; generation++; clearTimeout(timer); });
   void (c.defaultProjectDirectory ? Promise.resolve(c.defaultProjectDirectory) : Store.defaultProjectDirectory()).then((directory) => {
     if (!alive) return;
@@ -1035,16 +1036,16 @@ function ProjectEditor(props: { controller: PanelController }) {
   return <View style={{ gap: 10 }}>
     <Text style={{ fontFamily: theme().family, fontSize: text(15), color: ink() }}>New project</Text>
     <Text style={{ fontFamily: theme().family, fontSize: text(11), color: muted() }}>Project name</Text>
-    <Input testID="project-name" accessibilityLabel="Project name" placeholder={followsName() ? "my-project" : "Use folder name"} value={name()} readonly={c.pending()} autoFocus={true} onChange={setName} onSubmit={save} style={field()} focusStyle={fieldFocus()} />
+    <Input testID="project-name" accessibilityLabel="Project name" placeholder={followsName() ? "my-project" : "Use folder name"} value={name()} readonly={c.pending()} autoFocus={true} onChange={({ value }) => setName(value)} onSubmit={save} style={field()} focusStyle={fieldFocus()} />
     <Text style={{ fontFamily: theme().family, fontSize: text(11), color: muted() }}>Folder</Text>
     <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-      <Input testID="project-path" accessibilityLabel="Project folder" placeholder="/path/to/project" value={path()} readonly={c.pending()} onChange={(value) => { followsName.set(false); setPath(value); }} onSubmit={save} ref={(node) => { pathInput = node; }} style={{ ...field(), fontFamily: theme().monoFamily, flex: 1, minWidth: 0 }} focusStyle={fieldFocus()} />
+      <Input testID="project-path" accessibilityLabel="Project folder" placeholder="/path/to/project" value={path()} readonly={c.pending()} onChange={({ value }) => { followsName.set(false); setPath(value); }} onSubmit={save} ref={(node) => { pathInput = node; }} style={{ ...field(), fontFamily: theme().monoFamily, flex: 1, minWidth: 0 }} focusStyle={fieldFocus()} />
       <Command id="browse-project" label="Browse…" disabled={c.pending()} onPress={() => void browse()} />
     </View>
     <Text testID="project-inspection" style={{ fontFamily: theme().family, fontSize: text(11), color: muted() }}>{checking() ? "Checking folder…" : inspection() ? `${inspection()!.exists ? "Existing folder" : "New folder"} · ${inspection()!.repositoryCount ? plural(inspection()!.repositoryCount, "Git repository") : "no repositories"}` : "Enter a project name, or choose an existing folder."}</Text>
-    {resolved() !== "" && <Text numberOfLines={2} style={{ fontFamily: theme().family, fontSize: text(10), color: muted() }}>{`Resolves to ${resolved()}`}</Text>}
+    {resolved() !== "" && <Text style={{ fontFamily: theme().family, fontSize: text(10), color: muted(), numberOfLines: 2 }}>{`Resolves to ${resolved()}`}</Text>}
     {!!inspection()?.warning && <Text style={{ fontFamily: theme().family, fontSize: text(11), color: theme().palette.gold }}>{inspection()!.warning}</Text>}
-    {inspection()?.canInitGit ? <Switch testID="project-init-git" accessibilityLabel="Initialize Git" checked={initGit()} onChange={(value) => initGit.set(value)} disabled={c.pending()}
+    {inspection()?.canInitGit ? <Switch testID="project-init-git" accessibilityLabel="Initialize Git" checked={initGit()} onChange={({ checked }) => initGit.set(checked)} disabled={c.pending()}
       style={{ flexDirection: "row-reverse", alignItems: "center", justifyContent: "space-between", gap: 12, minHeight: space(36, theme().scale), borderRadius: space(8, theme().scale) }}
       focusStyle={focusRing(theme().palette, 2)} disabledStyle={{ opacity: 0.45 }} {...switchParts(theme, initGit())}>
       <Text style={{ flex: 1, fontFamily: theme().family, fontSize: text(11), color: ink() }}>Initialize Git</Text>

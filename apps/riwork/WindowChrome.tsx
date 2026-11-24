@@ -1,5 +1,5 @@
 import { View, cleanup, host, signal } from "nsh";
-import { Window } from "nsh/desktop";
+import { currentWindow } from "nsh/desktop";
 import type { DockNode } from "nsh/base";
 import { WORKSPACE_METRICS } from "./metrics";
 
@@ -43,7 +43,7 @@ export function useWindowChrome() {
   // traffic-light layout then competes with our host's compact control inset on
   // every live-resize frame. The host owns that geometry; we reserve the same
   // 28-point strip here without asking AppKit for a second titlebar layout.
-  Window.setTitleBar("hidden");
+  currentWindow().set({ titleBar: { style: "hidden" } });
   cleanup(host.on("window.state", (next) => state.set(next as WindowState)));
   return { state, fullscreen: () => state().mode === "fullscreen" };
 }

@@ -10,6 +10,9 @@ import subprocess
 import sys
 import time
 
+# The NSH CLI this checkout builds its UI with, matching the pinned Rust NSH crates.
+NSH_VERSION = "0.6.1"
+
 
 def run(command, *, cwd, env):
     print("+ " + " ".join(map(str, command)), flush=True)
@@ -32,15 +35,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project", type=Path, default=repo, help="Project opened in the development window")
     parser.add_argument("--home", type=Path, help="Separate Somtus data directory (default: target/dev-ui/home)")
-    parser.add_argument("--nsh", default=os.environ.get("NSH_CLI") or shutil.which("nsh"), help="Pinned NSH 0.3.0 CLI, or set NSH_CLI")
+    parser.add_argument("--nsh", default=os.environ.get("NSH_CLI") or shutil.which("nsh"), help=f"Pinned NSH {NSH_VERSION} CLI, or set NSH_CLI")
     parser.add_argument("--port", type=int, help="Local dev-server port (default: choose a free port)")
     args = parser.parse_args()
     if not args.nsh:
-        parser.error("NSH 0.3.0 is required; pass --nsh or set NSH_CLI")
+        parser.error(f"NSH {NSH_VERSION} is required; pass --nsh or set NSH_CLI")
     nsh = Path(args.nsh).expanduser().resolve()
     version = subprocess.check_output([str(nsh), "--version"], text=True).strip()
-    if version.split()[:2] != ["nsh", "0.3.0"]:
-        parser.error(f"Expected NSH 0.3.0, found {version}; pass the pinned CLI with --nsh or NSH_CLI")
+    if version.split()[:2] != ["nsh", NSH_VERSION]:
+        parser.error(f"Expected NSH {NSH_VERSION}, found {version}; pass the pinned CLI with --nsh or NSH_CLI")
     project = args.project.expanduser().resolve(strict=True)
     if not project.is_dir():
         parser.error("--project must be a directory")

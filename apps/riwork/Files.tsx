@@ -1,9 +1,10 @@
-import { Clipboard, Image, List, Scroll, Text, View, cleanup, computed, effect, host, keymap, signal, untracked, type YNode } from "nsh";
+import { Clipboard, Image, List, Scroll, Text, View, cleanup, computed, effect, host, keymap, signal, untracked, type ListRef, type ViewRef } from "nsh";
 import { Button, Editor, Input, TextView, type EditorRef } from "nsh/base";
 import { Menu } from "nsh/desktop";
 import { Files, Store, type Subscription } from "riwork/native";
 import { DEFAULT_THEME, space, type InterfaceTheme } from "./appearance";
 import { Icon, type IconName } from "./Icon";
+import { focusView } from "./keyboard";
 import { StatusPill, focusRing, searchBox, type Tone } from "./PanelKit";
 import { PANEL } from "./panel_layout";
 import { directoryData, fileRows, memoBytes, omittedLabel, previewData, reconcileListings, type DirectoryListing, type FileEntry, type FilePreview } from "./files_model";
@@ -30,9 +31,9 @@ export function createFilesController(options: FilesOptions) {
   const renderedMarkdown = signal(true), line = signal<number | undefined>(undefined);
   const treeFocused = signal(false);
   const filterFocused = signal(false), filterComposing = signal(false), focused = signal<"files" | "preview" | null>(null), zoom = signal(1);
-  const searches = new Map<string, YNode>();
-  const treeLists = new Map<string, YNode>();
-  const treeFocus = new Map<string, YNode>();
+  const searches = new Map<string, ViewRef>();
+  const treeLists = new Map<string, ListRef>();
+  const treeFocus = new Map<string, ViewRef>();
   const theme = options.theme ?? (() => DEFAULT_THEME);
   const watches = new Map<string, Subscription>(), revisions = new Map<string, number>();
   let currentRoot: string | null = null, generation = 0, watchGeneration = 0, previewGeneration = 0, alive = true;
@@ -234,7 +235,7 @@ export function createFilesController(options: FilesOptions) {
   }
   function focusTree(id?: string) {
     const node = id ? treeFocus.get(id) : treeFocus.values().next().value;
-    node?.focus(); filterFocused.set(false); treeFocused.set(true); focused.set("files");
+    focusView(node); filterFocused.set(false); treeFocused.set(true); focused.set("files");
   }
   const active = () => visible() && (options.active ? options.active() : focused());
   function navigate(key: string) {
@@ -310,7 +311,7 @@ function gitTone(status: string): Tone {
 }
 export function FilesPanel(props: { controller: FilesController; surface?: string }) {
   const c = props.controller, id = props.surface ?? "files";
-  let search: YNode | undefined;
+  let search: ViewRef | undefined;
   cleanup(() => { c.searches.delete(id); c.treeLists.delete(id); c.treeFocus.delete(id); });
   const empty = () => !c.root() ? "Select a worktree to browse its files." : c.loading() ? "Loading worktree…" : c.listings().get(c.root()!)?.error || (c.query() ? "No loaded files match. Clear the filter and expand folders to load more." : !c.hidden() ? "No visible files. Turn on Hidden to show dotfiles." : "This folder is empty.");
   function contextMenu(entry: FileEntry) {
@@ -330,7 +331,7 @@ export function FilesPanel(props: { controller: FilesController; surface?: strin
     <View style={{ minHeight: space(PANEL.header, c.theme().scale), paddingHorizontal: space(PANEL.inset, c.theme().scale), flexDirection: "row", alignItems: "center", gap: 6 }}>
       <View style={{ flex: 1, minWidth: 0, gap: 1 }}>
         <Text style={{ ...styles(c).text, fontSize: 13 * c.theme().scale, fontWeight: "600" }}>Files</Text>
-        <Text numberOfLines={1} style={styles(c).muted}>{c.root() ? `${c.label()} · ${c.rows().length} ${c.rows().length === 1 ? "item" : "items"}` : "No worktree"}</Text>
+        <Text style={{ ...styles(c).muted, numberOfLines: 1 }}>{c.root() ? `${c.label()} · ${c.rows().length} ${c.rows().length === 1 ? "item" : "items"}` : "No worktree"}</Text>
       </View>
       <View style={{ flexDirection: "row", gap: 2 }}>
         <FileAction controller={c} id={`files-refresh:${id}`} label="Refresh Files" icon="refresh" disabled={!c.root()} onPress={c.refresh} />
@@ -341,14 +342,14 @@ export function FilesPanel(props: { controller: FilesController; surface?: strin
     <View style={{ paddingHorizontal: space(12, c.theme().scale), paddingBottom: space(6, c.theme().scale) }}>
       <View style={searchBox(c.theme, c.filterFocused()).style} hoverStyle={searchBox(c.theme, c.filterFocused()).hoverStyle}>
         <Icon name="search" size={13 * c.theme().scale} color={c.theme().palette.muted} />
-        <Input testID={`files-filter:${id}`} ref={(node) => { search = node; c.searches.set(id, node); }} accessibilityLabel="Filter loaded files" placeholder="Filter loaded files…" value={c.query()} onChange={(value) => c.query.set(value)} onFocus={() => { c.focused.set("files"); c.filterFocused.set(true); }} onBlur={() => c.filterFocused.set(false)} onCompositionChange={(event) => c.filterComposing.set(event.composing)} onSubmit={() => { if (!c.filterComposing()) c.focusTree(id); }} style={{ ...styles(c).text, padding: 0, flex: 1, minWidth: 0, backgroundColor: "transparent" }} />
+        <Input testID={`files-filter:${id}`} ref={(node) => { search = node; c.searches.set(id, node); }} accessibilityLabel="Filter loaded files" placeholder="Filter loaded files…" value={c.query()} onChange={({ value }) => c.query.set(value)} onFocus={() => { c.focused.set("files"); c.filterFocused.set(true); }} onBlur={() => c.filterFocused.set(false)} onCompositionChange={(event) => c.filterComposing.set(event.composing)} onSubmit={() => { if (!c.filterComposing()) c.focusTree(id); }} style={{ ...styles(c).text, padding: 0, flex: 1, minWidth: 0, backgroundColor: "transparent" }} />
         {c.query() !== "" && <FileAction controller={c} id={`files-clear:${id}`} label="Clear filter" icon="close" onPress={() => { c.query.set(""); search?.focus(); }} />}
       </View>
     </View>
     {c.root() && <View testID="files-location" style={{ paddingHorizontal: space(PANEL.inset, c.theme().scale), paddingBottom: space(10, c.theme().scale), gap: 8 }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 6, minWidth: 0 }}>
         <Icon name="worktrees" size={14 * c.theme().scale} color={c.theme().palette.muted} />
-        <Text numberOfLines={1} selectable={true} style={{ ...styles(c).muted, flex: 1 }}>{c.root()}</Text>
+        <Text style={{ ...styles(c).muted, flex: 1, numberOfLines: 1, userSelect: "text" }}>{c.root()}</Text>
       </View>
       <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
         <Text style={{ ...styles(c).muted, fontWeight: "600" }}>Name</Text>
@@ -363,7 +364,7 @@ export function FilesPanel(props: { controller: FilesController; surface?: strin
     </List>
     {!c.query() && [...c.listings().values()].filter((listing) => listing.omitted > 0 && (listing.path === c.root() || c.expanded().has(listing.path))).map((listing) => <Text style={{ ...styles(c).muted, padding: 8 }}>{omittedLabel(listing.omitted, listing.scanLimited)}</Text>)}
     {c.root() && <View testID={`files-selection-bar:${id}`} style={{ height: space(36, c.theme().scale), paddingLeft: space(12, c.theme().scale), paddingRight: space(8, c.theme().scale), flexDirection: "row", alignItems: "center", gap: 2, borderTopWidth: 1, borderTopColor: c.theme().palette.divider }}>
-      <Text testID="files-selection" numberOfLines={1} style={{ ...styles(c).muted, flex: 1, minWidth: 0, fontFamily: c.selected() ? c.theme().monoFamily : c.theme().family }}>{c.selected()?.relativePath ?? "Select a file or folder"}</Text>
+      <Text testID="files-selection" style={{ ...styles(c).muted, flex: 1, minWidth: 0, fontFamily: c.selected() ? c.theme().monoFamily : c.theme().family, numberOfLines: 1 }}>{c.selected()?.relativePath ?? "Select a file or folder"}</Text>
       <FileAction controller={c} id={`files-edit:${id}`} label="Edit in Vim" icon="terminal" disabled={c.selected()?.kind !== "file" || !c.selected()?.identity} onPress={() => void c.edit()} />
       <FileAction controller={c} id={`files-open:${id}`} label="Open externally" icon="open" disabled={!c.selected() || c.selected()?.kind === "symlink"} onPress={() => void c.open()} />
     </View>}
@@ -377,7 +378,7 @@ export function FilesPanel(props: { controller: FilesController; surface?: strin
       style={{ height: space(32, c.theme().scale), paddingLeft: space(6 + props.item().depth * 16, c.theme().scale), paddingRight: 6, flexDirection: "row", alignItems: "center", gap: 5, borderRadius: space(8, c.theme().scale), backgroundColor: c.selected()?.path === entry().path ? c.theme().palette.panelActive : "transparent" }}
       hoverStyle={{ backgroundColor: c.theme().palette.panelActive }} focusStyle={focusRing(c.theme().palette, -2)}>
       <View style={{ width: space(16, c.theme().scale), flexShrink: 0 }}>{entry().kind === "directory" && <Icon name={c.expanded().has(entry().path) ? "down" : "right"} size={16 * c.theme().scale} color={c.theme().palette.muted} />}</View>
-      <Text numberOfLines={1} style={{ ...styles(c).text, fontFamily: c.theme().family, fontSize: 12 * c.theme().scale, fontWeight: entry().kind === "directory" ? "600" : "400", flex: 1 }}>{entry().name}</Text>
+      <Text style={{ ...styles(c).text, fontFamily: c.theme().family, fontSize: 12 * c.theme().scale, fontWeight: entry().kind === "directory" ? "600" : "400", flex: 1, numberOfLines: 1 }}>{entry().name}</Text>
       {entry().kind === "symlink" && <StatusPill theme={c.theme} tone="neutral" label="Link" inline={true} />}
       {entry().gitStatus && <StatusPill theme={c.theme} id={`git:${entry().relativePath}`} accessibilityLabel={`Git ${entry().gitStatus}`} tone={gitTone(entry().gitStatus!)} label={entry().gitStatus!} inline={true} />}
     </View>;
@@ -395,11 +396,11 @@ export function PreviewPanel(props: { controller: FilesController }) {
     if (atLine > lines.length) { c.notice.set(`Line ${atLine} is past the end of ${content.truncated ? "this preview, which stops early" : "this file"}.`); return; }
     node.revealPosition({ line: Math.max(0, atLine - 1), column: 0 }, true);
   });
-  return <View testID="file-preview-panel" onLayout={(bounds) => compact.set(bounds.size.width < space(360, c.theme().scale))}
+  return <View testID="file-preview-panel" onLayout={({ bounds }) => compact.set(bounds.size.width < space(360, c.theme().scale))}
     onPress={() => c.focused.set("preview")} style={{ flex: 1, minHeight: 0, backgroundColor: c.theme().palette.bg }}>
     <View testID="preview-toolbar" style={{ minHeight: space(PANEL.header, c.theme().scale), paddingHorizontal: space(PANEL.inset, c.theme().scale), flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: c.theme().palette.panel }}>
       <Icon name="file" size={14 * c.theme().scale} color={c.theme().palette.muted} />
-      <Text testID="preview-title" numberOfLines={1} style={{ ...styles(c).text, flex: 1, minWidth: 0, fontWeight: "600" }}>{entry()?.relativePath ?? "Preview"}</Text>
+      <Text testID="preview-title" style={{ ...styles(c).text, flex: 1, minWidth: 0, fontWeight: "600", numberOfLines: 1 }}>{entry()?.relativePath ?? "Preview"}</Text>
       <FileAction controller={c} id="preview-edit" label="Edit in Vim" icon="terminal" disabled={entry()?.kind !== "file" || !entry()?.identity} onPress={() => void c.edit(entry())} />
       {!compact() && <>
         <FileAction controller={c} id="preview-copy-path" label="Copy path" icon="copy" disabled={!entry()} onPress={() => void c.copyPath(entry())} />
@@ -423,7 +424,7 @@ export function PreviewPanel(props: { controller: FilesController }) {
     </View>
     {/* One fixed height whatever the row holds, so the content edge never moves between files. */}
     {data() && <View style={{ height: space(32, c.theme().scale), flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: space(12, c.theme().scale), backgroundColor: c.theme().palette.panel, borderBottomWidth: 1, borderBottomColor: c.theme().palette.divider }}>
-      <Text testID="preview-metadata" numberOfLines={1} style={{ ...styles(c).muted, flex: 1 }}>{data()?.kind === "text" ? data()?.markdown ? c.renderedMarkdown() ? "Markdown · Read only" : "Markdown source · Read only" : "Text / Code · Read only" : data()?.kind === "image" || data()?.kind === "pdf" ? `${data()?.mime ?? (data()?.kind === "pdf" ? "PDF" : "Image")} · ${data()?.width ?? 0} × ${data()?.height ?? 0} pixels` : "No preview"}</Text>
+      <Text testID="preview-metadata" style={{ ...styles(c).muted, flex: 1, numberOfLines: 1 }}>{data()?.kind === "text" ? data()?.markdown ? c.renderedMarkdown() ? "Markdown · Read only" : "Markdown source · Read only" : "Text / Code · Read only" : data()?.kind === "image" || data()?.kind === "pdf" ? `${data()?.mime ?? (data()?.kind === "pdf" ? "PDF" : "Image")} · ${data()?.width ?? 0} × ${data()?.height ?? 0} pixels` : "No preview"}</Text>
       {!compact() && data()?.kind === "text" && <Button testID="preview-copy-contents" onPress={() => void c.copyContents()} style={styles(c).button}><Text style={styles(c).muted}>Copy contents</Text></Button>}
       {!compact() && data()?.markdown && <Button testID="preview-markdown-mode" onPress={() => c.renderedMarkdown.set(!c.renderedMarkdown())} style={styles(c).button}><Text style={styles(c).muted}>{c.renderedMarkdown() ? "Source" : "Rendered"}</Text></Button>}
       {c.zoomable() && <View style={{ flexDirection: "row", alignItems: "center", borderRadius: space(8, c.theme().scale), borderWidth: 1, borderColor: c.theme().palette.divider, backgroundColor: c.theme().palette.bg }}>
@@ -439,7 +440,7 @@ export function PreviewPanel(props: { controller: FilesController }) {
       <Text testID="preview-empty" style={{ ...styles(c).muted, textAlign: "center" }}>{c.root() ? "Select a file to preview it." : "Select a worktree to preview its files."}</Text>
     </View>}
     {data()?.truncated && <Text testID="preview-truncated" style={{ ...styles(c).muted, color: c.theme().palette.gold, paddingHorizontal: space(12, c.theme().scale), paddingVertical: space(6, c.theme().scale) }}>Preview truncated at 1 MiB or 10,000 lines</Text>}
-    {data()?.kind === "message" && <View testID="preview-fallback" style={{ gap: 10, padding: space(12, c.theme().scale) }}><Text selectable={true} style={styles(c).text}>{data()?.message}</Text>
+    {data()?.kind === "message" && <View testID="preview-fallback" style={{ gap: 10, padding: space(12, c.theme().scale) }}><Text style={{ ...styles(c).text, userSelect: "text" }}>{data()?.message}</Text>
       <View style={{ flexDirection: "row", gap: 6 }}>
         {entry()?.name.toLowerCase().endsWith(".pdf") && <Button testID="preview-pdf-request" disabled={c.previewLoading()} onPress={() => { if (entry()) void c.loadPreview(entry()!, true); }} style={styles(c).button}><Text style={styles(c).text}>Preview PDF</Text></Button>}
         {entry() && entry()?.kind !== "symlink" && <Button testID="preview-fallback-open" onPress={() => void c.open(entry())} style={styles(c).button}><Text style={styles(c).text}>Open externally</Text></Button>}
@@ -451,7 +452,7 @@ export function PreviewPanel(props: { controller: FilesController }) {
           decorations={c.line() ? [{ range: { start: { line: Math.max(0, c.line()! - 1), column: 0 }, end: { line: Math.max(0, c.line()! - 1), column: 4000 } }, lineStyle: { backgroundColor: c.theme().palette.panelActive } }] : []} style={{ flex: 1, minHeight: 0 }} />}
     </View>}
     {(data()?.kind === "image" || data()?.kind === "pdf") && <View testID={`preview-${data()!.kind}`} style={{ flex: 1, minHeight: 0, gap: 8 }}>
-      {data()?.dataUrl && <Scroll minimumZoomScale={0.05} maximumZoomScale={5} zoomScale={c.zoom()} style={{ flex: 1, minHeight: 0 }} contentStyle={{ flexGrow: 1 }}><Image testID="preview-bitmap" src={data()!.dataUrl!} resizeMode="contain" style={{ flex: 1, minHeight: 100 }} /></Scroll>}
+      {data()?.dataUrl && <Scroll minimumZoomScale={0.05} maximumZoomScale={5} zoomScale={c.zoom()} style={{ flex: 1, minHeight: 0 }} contentStyle={{ flexGrow: 1 }}><Image testID="preview-bitmap" src={data()!.dataUrl!} style={{ flex: 1, minHeight: 100, objectFit: "contain" }} /></Scroll>}
       {data()?.kind === "pdf" && <View style={{ flexDirection: "row", gap: 10, alignItems: "center" }}>
         <Button testID="preview-pdf-prev" disabled={c.previewLoading() || (data()?.page ?? 1) <= 1} onPress={() => { if (entry()) void c.loadPreview(entry()!, true, (data()?.page ?? 1) - 1); }}><Text style={styles(c).text}>‹ Prev</Text></Button>
         <Text testID="preview-pdf-page" style={styles(c).muted}>{`Page ${data()?.page ?? 1} of ${data()?.pages ?? 1}`}</Text>
@@ -475,7 +476,7 @@ export function MemoEditor(props: {
   type Draft = { text: string; saved: string; dirty: boolean; running: boolean; error: string; revision?: number };
   const drafts = new Map<string, Draft>();
   let current = "", alive = true, timer: ReturnType<typeof setTimeout> | undefined;
-  let input: YNode | undefined;
+  let input: ViewRef | undefined;
   const draft = (id: string) => { if (!drafts.has(id)) drafts.set(id, { text: "", saved: "", dirty: false, running: false, error: "" }); return drafts.get(id)!; };
   function renderStatus() {
     if (!alive) return;
@@ -524,7 +525,7 @@ export function MemoEditor(props: {
   return <View testID="project-memo-editor" style={{ flex: 1, minHeight: 0, padding: 12, gap: 8 }}>
     <Text style={textStyle()}>Project memo</Text>
     <Input testID="project-memo-input" ref={(node) => { input = node; props.onControl?.(control); }} accessibilityLabel="Project memo" multiline={true} autoCorrect={false} value={value()} placeholder="Write notes for this project in Markdown: plans, links, decisions. Only you see them. No agent is given the memo; type /memo in a chat to insert it yourself."
-      onChange={(text) => {
+      onChange={({ value: text }) => {
         const d = draft(current); d.text = text; d.dirty = d.running || d.text !== d.saved; d.error = ""; value.set(text); clearTimeout(timer);
         if (memoBytes(text) <= 32768) {
           try { d.revision = Store.stageProjectMemo(current, text); timer = setTimeout(() => void save(), 600); }

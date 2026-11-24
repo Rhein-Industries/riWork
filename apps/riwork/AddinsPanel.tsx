@@ -52,7 +52,7 @@ export function AddinsPanel(props: {
     const look = buttonLook(theme, kind);
     return <View testID={testID} role="button" focusable={true} accessibilityLabel={label} onPress={() => { if (!busy()) action(); }}
       style={{ ...look.style, opacity: busy() ? 0.5 : 1 }} hoverStyle={look.hoverStyle} focusStyle={look.focusStyle}>
-      <Text numberOfLines={1} style={look.label}>{label}</Text>
+      <Text style={{ ...look.label, numberOfLines: 1 }}>{label}</Text>
     </View>;
   };
 
@@ -66,11 +66,11 @@ export function AddinsPanel(props: {
         style={{ flex: 1, minWidth: 160, gap: 6, borderRadius: space(6, theme().scale) }} focusStyle={focusRing(theme().palette, 2)}>
         <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
           <Icon name="addins" size={18 * theme().scale} color={addin().problem ? theme().palette.danger : addin().trusted ? theme().palette.text : theme().palette.muted} />
-          <Text numberOfLines={1} style={{ ...text(12), flex: 1 }}>{addin().name ?? addin().key}</Text>
+          <Text style={{ ...text(12), flex: 1, numberOfLines: 1 }}>{addin().name ?? addin().key}</Text>
           <Text style={text(9, theme().palette.muted)}>{`${addin().scope === "project" ? "Project" : addin().installed ? "Installed" : "Personal"}${addin().version ? ` · ${addin().version}` : ""}`}</Text>
         </View>
-        {!!addin().description && <Text numberOfLines={open() ? 6 : 2} style={text(10, theme().palette.muted)}>{addin().description!}</Text>}
-        {!!addin().problem && <Text selectable={true} style={text(10, theme().palette.danger)}>{addin().problem!}</Text>}
+        {!!addin().description && <Text style={{ ...text(10, theme().palette.muted), numberOfLines: open() ? 6 : 2 }}>{addin().description!}</Text>}
+        {!!addin().problem && <Text style={{ ...text(10, theme().palette.danger), userSelect: "text" }}>{addin().problem!}</Text>}
         {!addin().problem && !addin().trusted && <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
           <StatusPill theme={theme} tone="needs" label="Not trusted yet" />
           <Text style={text(10, theme().palette.muted)}>Opening it asks first.</Text>
@@ -99,7 +99,7 @@ export function AddinsPanel(props: {
                 style={{ ...text(11), paddingHorizontal: 8, paddingVertical: 5, borderRadius: space(8, theme().scale), borderWidth: 1, borderColor: theme().palette.divider, backgroundColor: theme().palette.bg }}
                 focusStyle={{ borderColor: theme().palette.focus }} />}
         </View>)}
-        <Text selectable={true} numberOfLines={2} style={{ ...text(9, theme().palette.muted), fontFamily: theme().monoFamily }}>{addin().dir}</Text>
+        <Text style={{ ...text(9, theme().palette.muted), fontFamily: theme().monoFamily, userSelect: "text", numberOfLines: 2 }}>{addin().dir}</Text>
       </View>}
     </View>;
   }
@@ -114,7 +114,7 @@ export function AddinsPanel(props: {
     </View>
     {creating() && <View style={{ paddingHorizontal: 12, paddingBottom: 10, gap: 6 }}>
       <Input testID="addin-new-name" accessibilityLabel="Add-in name" autoFocus={true} autoCorrect={false} placeholder="Name, e.g. Security dashboard"
-        value={name()} onChange={(value) => name.set(value)} onSubmit={() => void create()}
+        value={name()} onChange={({ value }) => name.set(value)} onSubmit={() => void create()}
         style={{ ...text(12), paddingHorizontal: 8, paddingVertical: 5, borderRadius: space(8, theme().scale), borderWidth: 1, borderColor: theme().palette.divider, backgroundColor: theme().palette.bg }}
         focusStyle={{ borderColor: theme().palette.focus }} />
       <View style={{ flexDirection: "row", gap: 6, alignItems: "center" }}>

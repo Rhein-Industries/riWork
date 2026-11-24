@@ -10,8 +10,9 @@ mod nsh_menus;
 use nsh_platform_macos::{
     objc2::{MainThreadMarker, rc::Retained, sel},
     objc2_app_kit::{
-        NSAccessibility, NSApplication, NSApplicationActivationPolicy, NSEventModifierFlags,
-        NSMenu, NSMenuItem, NSWindowButton, NSWindowStyleMask,
+        NSAccessibility, NSAppearance, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
+        NSApplication, NSApplicationActivationPolicy, NSColorSpace, NSEventModifierFlags, NSMenu,
+        NSMenuItem, NSWindowButton, NSWindowStyleMask,
     },
     objc2_foundation::{NSPoint, NSRect, NSSize},
 };
@@ -67,6 +68,23 @@ fn window_chrome(mtm: MainThreadMarker, _: &NSMenu, _: &nsh_menus::HostMenus) {
     assert_eq!(frame.origin.x, 10.);
     let top = window.frame().size.height - frame.origin.y - frame.size.height;
     assert_eq!(top, 8.);
+    // The backdrop an embedded NSH 0.6.1 view does not paint: by the appearance.
+    let background = window.backgroundColor();
+    // SAFETY: immutable AppKit constants.
+    let names = unsafe { [(NSAppearanceNameAqua, false), (NSAppearanceNameDarkAqua, true)] };
+    for (name, dark) in names {
+        let appearance = NSAppearance::appearanceNamed(name).unwrap();
+        assert_eq!(nsh_chrome::is_dark(&appearance), dark);
+        let resolved = std::cell::Cell::new(None);
+        appearance.performAsCurrentDrawingAppearance(&block2::StackBlock::new(|| {
+            let color = background
+                .colorUsingColorSpace(&NSColorSpace::sRGBColorSpace())
+                .unwrap();
+            let rgb = [color.redComponent(), color.greenComponent(), color.blueComponent()];
+            resolved.set(Some(rgb.map(|part| (part * 255.).round() as u8)));
+        }));
+        assert_eq!(resolved.get(), Some(nsh_chrome::backdrop_rgb(dark)));
+    }
     window.close();
 }
 
@@ -302,6 +320,10 @@ pub fn run() {
         ),
         ("tooltips_create_no_nswindow", tooltips_create_no_nswindow),
         (
+            "the_apps_window_calls_reach_the_hosts_window_and_leave_it_the_controls",
+            the_apps_window_calls_reach_the_hosts_window_and_leave_it_the_controls,
+        ),
+        (
             "text_size_key_equivalents_dispatch_without_a_window",
             text_size_key_equivalents_dispatch_without_a_window,
         ),
@@ -510,6 +532,110 @@ fn titlebar_double_click_reads_the_system_preference(
     unsafe {
         defaults.setVolatileDomain_forName(&original, &domain);
     }
+    view.stop();
+    window.close();
+}
+
+/// The app's NSH 0.5 window calls against a window made as the host makes its own, with the
+/// host's capabilities (no `windows` grant): the view's main window is the host's. A hidden
+/// title bar without a height (`currentWindow().set({ titleBar: { style: "hidden" } })`, as
+/// WindowChrome.tsx and GlobalWindow.tsx) leaves the traffic lights where the host put them,
+/// and a title set later through the window captured while rendering (as Workspace.tsx)
+/// reaches the host's window.
+fn the_apps_window_calls_reach_the_hosts_window_and_leave_it_the_controls(
+    mtm: MainThreadMarker,
+    _: &NSMenu,
+    _: &nsh_menus::HostMenus,
+) {
+    use nsh_platform_macos::{App, AppOptions, AppView, Bundle};
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let window = nsh_chrome::create_window(
+        mtm,
+        NSRect::new(NSPoint::new(100., 100.), NSSize::new(1000., 700.)),
+    );
+    let view = AppView::new(
+        mtm,
+        AppOptions {
+            app_id: "dev.riwork.acceptance.window".into(),
+            size: (1000, 700),
+            data_dir: Some(
+                std::env::temp_dir().join(format!("riwork-window-probe-{}", std::process::id())),
+            ),
+            ..Default::default()
+        },
+    );
+    window.setContentView(Some(&view.view()));
+    nsh_chrome::position_controls(&window);
+    // The close button's left edge and its distance from the window's top.
+    let close = || {
+        let button = window
+            .standardWindowButton(NSWindowButton::CloseButton)
+            .unwrap();
+        let frame = button.convertRect_toView(button.bounds(), None);
+        (
+            frame.origin.x,
+            window.frame().size.height - frame.origin.y - frame.size.height,
+        )
+    };
+    assert_eq!(close(), (10., 8.));
+    let ready = Arc::new(AtomicBool::new(false));
+    let mounted = ready.clone();
+    view.host().handle("app.fixture.ready", move |call| {
+        mounted.store(true, Ordering::Release);
+        call.resolve(serde_json::json!({}));
+    });
+    // The capabilities are the host's own (`nsh_host::CAPABILITIES`).
+    let bundle = Bundle::source(r#"
+        import { mount, host } from "nsh";
+        import { currentWindow } from "nsh/desktop";
+        import { element, prop } from "nsh:rt";
+        mount(() => {
+            const root = element("view");
+            prop(root, "style", { width: 500, height: 300 });
+            const nativeWindow = currentWindow();
+            nativeWindow.set({ titleBar: { style: "hidden" } });
+            host.on("app.fixture.title", ({ title }) => nativeWindow.set({ title }));
+            host.post("app.fixture.ready", {});
+            return root;
+        });
+    "#.to_owned())
+    .with_capabilities_json(Some(
+        r#"{"host":["window.*","app.*","system.*"],"clipboard":true,"openUrl":true,"application":true}"#,
+    ))
+    .unwrap();
+    view.load(App::Js(bundle));
+    for _ in 0..40 {
+        chrome_probe::pump();
+        if ready.load(Ordering::Acquire) {
+            break;
+        }
+    }
+    assert!(ready.load(Ordering::Acquire), "the window fixture must mount");
+    // The attributes come with the mount batch, and NSH settles the title bar once more from
+    // the main queue.
+    for _ in 0..10 {
+        chrome_probe::pump();
+    }
+    assert!(
+        window
+            .styleMask()
+            .contains(NSWindowStyleMask::FullSizeContentView)
+    );
+    assert!(window.titlebarAppearsTransparent());
+    assert!(window.toolbar().is_none());
+    assert_eq!(close(), (10., 8.));
+    view.host()
+        .send("app.fixture.title", serde_json::json!({"title": "Somtus · probe"}))
+        .unwrap();
+    for _ in 0..40 {
+        chrome_probe::pump();
+        if window.title().to_string() == "Somtus · probe" {
+            break;
+        }
+    }
+    assert_eq!(window.title().to_string(), "Somtus · probe");
+    assert!(!window.isVisible());
     view.stop();
     window.close();
 }

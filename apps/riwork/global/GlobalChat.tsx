@@ -90,7 +90,7 @@ export function GlobalChat(props: {
   }
   const palette = () => theme().palette;
   const font = (size: number) => ({ fontFamily: theme().family, fontSize: size * theme().scale });
-  return <>{visited() && <View testID="global-chat" style={{ flex: 1, minHeight: 0, display: props.visible() ? "flex" : "none" }}>
+  return <>{visited() && <View testID="global-chat" style={{ flex: 1, minHeight: 0, display: props.visible() ? "flex" : "none", flexDirection: "column" }}>
     {shown()?.kind === "chat" ?
       <ErrorBoundary fallback={(error, retry) => <ChatFailure error={error} retry={retry} theme={theme} />}><ChatTab chatId={(shown() as { id: string }).id} visible={props.visible()} theme={theme}
         onLink={(path) => { void host.call("system.openWith", { path }).catch((error) => props.onNotice(String(error))); }}

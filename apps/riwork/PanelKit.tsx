@@ -87,7 +87,7 @@ export function StatusPill(props: { theme: KitTheme; tone: Tone; label: string; 
       paddingLeft: space(7, scale()), paddingRight: space(8, scale()), borderRadius: space(10, scale()), backgroundColor: colors().bg }}>
     {/* A glyph, not a rounded view: the host draws small rounded views as squircles. */}
     <Text accessible={false} style={{ fontSize: 7 * scale(), color: colors().dot }}>●</Text>
-    <Text numberOfLines={1} style={{ fontFamily: props.theme().family, fontSize: 10 * scale(), fontWeight: "500", color: colors().fg }}>{props.label}</Text>
+    <Text style={{ fontFamily: props.theme().family, fontSize: 10 * scale(), fontWeight: "500", color: colors().fg, numberOfLines: 1 }}>{props.label}</Text>
   </View>;
 }
 
@@ -125,7 +125,7 @@ export function KitButton(props: { theme: KitTheme; label: string; kind?: Button
   return <Button testID={props.id} accessibilityLabel={props.accessibilityLabel ?? props.label} disabled={props.disabled} onPress={props.onPress}
     style={look().style} hoverStyle={look().hoverStyle} focusStyle={look().focusStyle} disabledStyle={look().disabledStyle}>
     {props.icon && <Icon name={props.icon} size={12 * props.theme().scale} color={look().icon} />}
-    <Text numberOfLines={1} style={look().label}>{props.children ?? props.label}</Text>
+    <Text style={{ ...look().label, numberOfLines: 1 }}>{props.children ?? props.label}</Text>
   </Button>;
 }
 
@@ -154,7 +154,7 @@ export function Segmented(props: { theme: KitTheme; segments: Segment[]; id?: st
         borderColor: segment.selected ? p().divider : "transparent", backgroundColor: segment.selected ? p().bg : "transparent", opacity: segment.disabled && !segment.selected ? 0.45 : 1 }}
       hoverStyle={segment.selected ? {} : { backgroundColor: mix(p().panelActive, p().text, 0.06) }} focusStyle={focusRing(p(), 1)}>
       {segment.icon ? <Icon name={segment.icon} size={14 * s()} color={segment.selected ? p().text : p().muted} />
-        : <Text numberOfLines={1} style={{ fontFamily: props.theme().family, fontSize: 10.5 * s(), fontWeight: "500", color: segment.selected ? p().text : p().muted }}>{segment.label}</Text>}
+        : <Text style={{ fontFamily: props.theme().family, fontSize: 10.5 * s(), fontWeight: "500", color: segment.selected ? p().text : p().muted, numberOfLines: 1 }}>{segment.label}</Text>}
       {segment.count != null && (!props.compact || segment.selected) && <Text style={{ fontFamily: props.theme().family, fontSize: 10 * s(), fontVariant: ["tabular-nums"], color: p().muted }}>{String(segment.count)}</Text>}
     </Button>)}
   </View>;

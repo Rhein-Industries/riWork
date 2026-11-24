@@ -5,7 +5,7 @@ import type { InterfaceTheme } from "./appearance";
 export function Brand(props: { theme: () => InterfaceTheme; size?: number; wordmark?: boolean }) {
   const side = () => (props.size ?? 20) * props.theme().scale;
   return <View accessibilityLabel="SOMTUS" style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-    <Canvas pointerEvents="none" style={{ width: side(), height: side(), flexShrink: 0 }} draw={(cx, size) => {
+    <Canvas style={{ width: side(), height: side(), flexShrink: 0, pointerEvents: "none" }} draw={(cx, size) => {
       cx.scale(size.width / 824, size.height / 824);
       cx.translate(-100, -100);
       cx.fillStyle = "#FF4A14";
