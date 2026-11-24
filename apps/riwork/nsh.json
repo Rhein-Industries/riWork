@@ -1,8 +1,8 @@
 {
   "name": "Somtus",
   "id": "dev.riwork.desktop",
-  "version": "0.1.0",
-  "build": 1,
+  "version": "0.2.0",
+  "build": 2,
   "rust": "../../crates/riwork-nsh-native",
   "capabilities": { "host": ["window.*", "app.*", "system.*"], "clipboard": true, "openUrl": true, "application": true },
   "appearance": "system"
