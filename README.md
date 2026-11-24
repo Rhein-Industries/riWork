@@ -16,7 +16,7 @@ Project-window layouts, command bars, add-in panels and shortcuts can be customi
 
 - macOS with Xcode command line tools; macOS 14 or later for Cua.ai desktop control.
 - Rust 1.99.1, selected by `rust-toolchain.toml`.
-- NSH CLI 0.3.0, matching the pinned Rust NSH crates. Set `NSH_CLI` to its absolute executable path.
+- NSH CLI 0.6.0, matching the pinned Rust NSH crates. Set `NSH_CLI` to its absolute executable path.
 - Zig 0.16 for Ghostty, tmux (`brew install tmux`), and Vim for file editing.
 
 Keep Zig in a persistent directory. See [toolchain requirements](docs/guides/development.md#requirements) and [iOS setup](ios/README.md) for platform-specific preparation.
@@ -33,7 +33,7 @@ From the checkout root, set the paths to your installed tools and build the rele
 
 ```sh
 export ZIG=/path/to/zig-0.16/zig
-export NSH_CLI=/path/to/nsh-0.3.0/bin/nsh
+export NSH_CLI=/path/to/nsh-0.6.0/bin/nsh
 export CARGO_TARGET_DIR="$PWD/target"
 (
 set -eu

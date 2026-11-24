@@ -1,6 +1,7 @@
-import { Text, View, cleanup, effect, keymap, signal, untracked, type YNode } from "nsh";
+import { Text, View, cleanup, effect, keymap, signal, untracked, type ViewRef } from "nsh";
 import { Button, Input, settingsFocusScope } from "../SettingsFocus";
 import { space, type InterfaceTheme } from "../theme";
+import { focusView } from "../keyboard";
 import type { ChatDecision, DecisionReviewDto } from "../client/types";
 import type { DecisionApi } from "../client/ports";
 import type { DecisionRow } from "./model";
@@ -111,7 +112,7 @@ export type DecisionReview = ReturnType<typeof createDecisionReview>;
 export function DecisionReviewView(props: {
   review: DecisionReview;
   theme: () => InterfaceTheme;
-  opener: () => YNode | undefined;
+  opener: () => ViewRef | undefined;
   onClose: () => void;
   onOpenChat: () => void;
 }) {
@@ -132,15 +133,15 @@ export function DecisionReviewView(props: {
   }
   effect(() => { if (within.containsFocus()) return keymap.bind("escape", close, { when: "always" }); });
   // As the dialog did: the focus starts on Close, which answers nothing.
-  let closeButton: YNode | undefined;
-  effect(() => untracked(() => { if (r.takeFocus()) closeButton?.focus(); }));
-  cleanup(() => { if (untracked(within.containsFocus)) queueMicrotask(() => props.opener()?.focus()); });
+  let closeButton: ViewRef | undefined;
+  effect(() => untracked(() => { if (r.takeFocus()) focusView(closeButton); }));
+  cleanup(() => { if (untracked(within.containsFocus)) queueMicrotask(() => focusView(props.opener())); });
 
   return <View testID="dashboard-decision-review" style={{ gap: size(12), paddingHorizontal: size(8), paddingTop: size(4), paddingBottom: size(10) }}>
     {r.review()?.approval && <View style={{ gap: size(8) }}>
       <Text style={{ ...text(11), color: palette().gold }}>{r.review()!.approval!.heading}</Text>
-      <Text selectable={true} style={{ ...text(12), fontFamily: r.review()!.approval!.kind === "command" ? props.theme().monoFamily : props.theme().family }}>{r.review()!.approval!.title}</Text>
-      {!!r.review()!.approval!.detail && <Text selectable={true} style={text(11, true)}>{r.review()!.approval!.detail}</Text>}
+      <Text style={{ ...text(12), fontFamily: r.review()!.approval!.kind === "command" ? props.theme().monoFamily : props.theme().family, userSelect: "text" }}>{r.review()!.approval!.title}</Text>
+      {!!r.review()!.approval!.detail && <Text style={{ ...text(11, true), userSelect: "text" }}>{r.review()!.approval!.detail}</Text>}
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: size(8) }}>
         {r.review()!.approval!.choices.map((choice) => <Button testID={`dashboard-decision-${choice.decision}`} disabled={!r.editable()} onPress={() => void r.respond(choice.decision)} {...focusEvents()}
           style={{ ...actionStyle(), backgroundColor: choice.decision === "accept" || choice.decision === "accept_for_session" ? primary() : "transparent", opacity: r.editable() ? 1 : 0.5 }}
@@ -152,7 +153,7 @@ export function DecisionReviewView(props: {
     {r.review()?.question && <View style={{ gap: size(14) }}>
       {r.review()!.question!.prompts.map((prompt, index) => <View style={{ gap: size(6) }}>
         {!!prompt.header && <Text style={text(10, true)}>{prompt.header}</Text>}
-        <Text selectable={true} style={{ ...text(12), fontWeight: "600" }}>{prompt.question}</Text>
+        <Text style={{ ...text(12), fontWeight: "600", userSelect: "text" }}>{prompt.question}</Text>
         {prompt.multiSelect && <Text style={text(10, true)}>Choose one or more, or type an answer.</Text>}
         {prompt.options.map((option) => <Button testID={`dashboard-answer-option-${index}-${option.label}`} selected={r.selected(index, option.label, prompt.multiSelect)} {...focusEvents()}
           accessibilityLabel={`${option.label}${option.description ? `. ${option.description}` : ""}`} disabled={!r.editable()} onPress={() => r.toggle(index, option.label, prompt.multiSelect)}
@@ -162,7 +163,7 @@ export function DecisionReviewView(props: {
           {!!option.description && <Text style={text(10, true)}>{option.description}</Text>}
         </Button>)}
         <Input testID={`dashboard-answer-${index}`} accessibilityLabel={`Answer ${index + 1}: ${prompt.question}`} placeholder="Or type your answer" value={r.typed()[index] ?? ""} readonly={!r.editable()}
-          onChange={(value) => r.type(index, value)} submitBehavior="submit" {...focusEvents()}
+          onChange={({ value }) => r.type(index, value)} submitBehavior="submit" {...focusEvents()}
           style={{ ...text(), paddingHorizontal: size(8), paddingVertical: size(6), borderWidth: 1, borderRadius: 5, borderColor: palette().divider, backgroundColor: palette().bg }} />
       </View>)}
       <Button testID="dashboard-send-answer" disabled={!r.editable()} onPress={() => void r.respond()} {...focusEvents()} style={{ ...actionStyle(), alignSelf: "flex-start", backgroundColor: primary(), opacity: r.editable() ? 1 : 0.5 }} focusStyle={{ borderColor: palette().cyan }}>
@@ -170,7 +171,7 @@ export function DecisionReviewView(props: {
       </Button>
     </View>}
     {!!r.status() && <Text role="text" style={{ ...text(), color: r.review()?.status === "sent" ? palette().cyan : palette().muted }}>{r.status()}</Text>}
-    {!!(r.error() || r.review()?.error) && <Text role="text" selectable={true} style={{ ...text(), color: palette().danger }}>{r.error() || r.review()?.error}</Text>}
+    {!!(r.error() || r.review()?.error) && <Text role="text" style={{ ...text(), color: palette().danger, userSelect: "text" }}>{r.error() || r.review()?.error}</Text>}
     <View style={{ flexDirection: "row", flexWrap: "wrap", justifyContent: "flex-end", gap: size(8) }}>
       {!r.loading() && !r.uncertain() && (!r.review() || r.review()?.status === "unavailable" || r.review()?.status === "sending") && <Button testID="dashboard-review-again" disabled={r.busy()} onPress={() => void r.read()} {...focusEvents()} style={actionStyle()} focusStyle={{ borderColor: palette().cyan }}><Text style={text()}>Read again</Text></Button>}
       <Button testID="dashboard-review-open-chat" disabled={r.busy()} onPress={() => { if (!r.busy()) props.onOpenChat(); }} {...focusEvents()} style={actionStyle()} focusStyle={{ borderColor: palette().cyan }}><Text style={text()}>Open chat</Text></Button>

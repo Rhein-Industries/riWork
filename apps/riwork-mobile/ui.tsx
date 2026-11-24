@@ -2,14 +2,11 @@
  * (`platform.theme`): 44-point targets, system text sizes times the display scale, SF Symbols on the
  * iPhone and the Mac's icons (`Icon`) on the iPad. The iPad draws the Mac's sizes in touch density, as the
  * shared dashboard's `touch` mode does: its 13-point text at 17, 11 at 15, 10 at 13 and 9 at 12. */
-import { Text, View, safeAreaInsets, type IOSNavPageHostProps, type JSX, type YNode } from "nsh";
-import { NavPage as BaseNavPage, type NavPageProps } from "nsh/base";
+import { Text, View, safeAreaInsets, type JSX } from "nsh";
+import { NavPage } from "nsh/base";
 import { Icon, type IconName } from "../riwork/Icon";
 import type { MobileApp } from "./app_state";
 import { Symbol } from "./Symbol";
-
-/** NSH 0.3.0 reads a page's `ios` props (`IOSNavPageHostProps`: the header's system Add button) but leaves them out of `NavPageProps`. */
-const NavPage = BaseNavPage as (props: NavPageProps & { ios?: IOSNavPageHostProps }) => YNode;
 
 /** How a page is placed: a page of the phone's navigation stack, or a pane of the iPad's columns. */
 export type Layout = "phone" | "pad";
@@ -77,7 +74,7 @@ export function kit(app: MobileApp) {
       <View style={{ backgroundColor: palette().panel, borderRadius: pt(12), overflow: "hidden" }}>{props.children}</View>
     </View>;
   }
-  function Divider() { return <View pointerEvents="none" accessible={false} style={{ height: 0.5, marginLeft: pt(16), backgroundColor: palette().divider }} />; }
+  function Divider() { return <View accessible={false} style={{ height: 0.5, marginLeft: pt(16), backgroundColor: palette().divider, pointerEvents: "none" }} />; }
   function Note(props: { title?: string; message: string; error?: boolean; children?: JSX.Element }) {
     return <View style={{ padding: pt(16), gap: pt(8), backgroundColor: palette().panel, borderRadius: pt(12) }}>
       {props.title && <Text role="header" style={{ ...text(17), fontWeight: "600" }}>{props.title}</Text>}
@@ -95,8 +92,8 @@ export function kit(app: MobileApp) {
   function StatusDot(props: { status: string }) {
     const tone = (): Tone | null => props.status === "working" ? "working" : props.status === "waiting" ? "gold" : props.status === "error" ? "error"
       : props.status === "done" ? "accent" : null;
-    return <>{tone() && <View pointerEvents="none" accessible={false}
-      style={{ width: pt(7), height: pt(7), borderRadius: pt(4), backgroundColor: color(tone()!) }} />}</>;
+    return <>{tone() && <View accessible={false}
+      style={{ width: pt(7), height: pt(7), borderRadius: pt(4), backgroundColor: color(tone()!), pointerEvents: "none" }} />}</>;
   }
   /** One page: on the phone a page of the navigation stack with the system header (and swipe back); on the
    * iPad the window under a top row of its own (the Hosts page; a project's page and the dashboard draw
@@ -116,7 +113,7 @@ export function kit(app: MobileApp) {
     return <View testID={props.testID} style={{ flex: 1, minWidth: 0, backgroundColor: palette().bg }}>
       <View style={{ flexDirection: "row", alignItems: "center", height: target(), flexShrink: 0, paddingLeft: windowControls() + pt(16), paddingRight: pt(6), gap: pt(4),
         backgroundColor: palette().panel, borderBottomWidth: 1, borderColor: palette().divider }}>
-        <Text role="header" numberOfLines={1} style={{ ...text(15), fontWeight: "600", flex: 1 }}>{props.title}</Text>
+        <Text role="header" style={{ ...text(15), fontWeight: "600", flex: 1, numberOfLines: 1 }}>{props.title}</Text>
         {props.right}
       </View>
       {props.children}
@@ -131,8 +128,8 @@ export function kit(app: MobileApp) {
         <Text style={text(15)}>{props.label}</Text>
         {props.detail && <Text style={text(12, "muted")}>{props.detail}</Text>}
       </View>
-      <View pointerEvents="none" accessible={false} style={{ width: 51, height: 31, borderRadius: 16, padding: 2,
-        backgroundColor: props.checked ? palette().working : palette().panelActive, alignItems: props.checked ? "flex-end" : "flex-start" }}>
+      <View accessible={false} style={{ width: 51, height: 31, borderRadius: 16, padding: 2,
+        backgroundColor: props.checked ? palette().working : palette().panelActive, alignItems: props.checked ? "flex-end" : "flex-start", pointerEvents: "none" }}>
         <View style={{ width: 27, height: 27, borderRadius: 14, backgroundColor: "#ffffff" }} />
       </View>
     </View>;

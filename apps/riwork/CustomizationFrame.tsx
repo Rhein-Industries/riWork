@@ -34,16 +34,16 @@ export function CustomizationFrame(props: {
   });
   return <View testID="customization-frame" style={{ flex: 1, minHeight: 0 }}>
     <View testID="customization-titlebar" desktop={{ windowDrag: true }} style={{ height: props.custom() ? 28 : 0, overflow: "hidden", flexDirection: "row", alignItems: "center", paddingLeft: 94, paddingRight: 10, gap: 12, backgroundColor: theme().palette.panel }}>
-      <Text numberOfLines={1} style={{ ...text(), flex: 1 }}>{props.title()}</Text>
+      <Text style={{ ...text(), flex: 1, numberOfLines: 1 }}>{props.title()}</Text>
       <View role="button" accessibilityLabel="Edit interface" onPress={props.onEdit}><Text style={text()}>Edit</Text></View>
       <View role="button" accessibilityLabel="Reset interface" onPress={props.onReset}><Text style={text()}>Reset</Text></View>
     </View>
-    <View testID="customization-body" onLayout={(event) => { const size = event.size; if (size.width !== extent().width || size.height !== extent().height) extent.set(size); }} style={{ flex: 1, minHeight: 0 }}>
+    <View testID="customization-body" onLayout={({ bounds }) => { const size = bounds.size; if (size.width !== extent().width || size.height !== extent().height) extent.set(size); }} style={{ flex: 1, minHeight: 0 }}>
       <View testID="customization-workspace" style={props.custom() ? position(geometry().workspace) : { flex: 1, minHeight: 0 }}>
         {props.children}
       </View>
       {blocks().map((block) => <View testID={`customization-block:${block.id}`} style={{ ...position(geometry().leaves.find(({ node }) => node.id === block.id)?.rect ?? { x: 0, y: 0, width: 0, height: 0 }), backgroundColor: theme().palette.panel, borderColor: theme().palette.divider, borderWidth: 1 }}>
-        <ErrorBoundary fallback={(error) => <View style={{ padding: 8 }}><Text selectable={true} style={text()}>{`This interface block could not load: ${String(error)}`}</Text><View role="button" accessibilityLabel="Reset interface" onPress={props.onReset}><Text style={text()}>Reset interface</Text></View></View>}>
+        <ErrorBoundary fallback={(error) => <View style={{ padding: 8 }}><Text style={{ ...text(), userSelect: "text" }}>{`This interface block could not load: ${String(error)}`}</Text><View role="button" accessibilityLabel="Reset interface" onPress={props.onReset}><Text style={text()}>Reset interface</Text></View></View>}>
           {block.type === "mod" ? <AddinTab addin={{ key: block.addin, view: block.view, args: block.args ?? null }} projectId={props.projectId} theme={theme} visible={() => true} workspace={props.workspace} onAction={props.onAction} /> :
             block.type === "commands" ? <Scroll style={{ flex: 1 }} contentStyle={{ padding: 8, gap: 4 }}>
               {block.items.map((item) => <View testID={`customization-command:${block.id}:${item.command}`} role="button" accessibilityLabel={item.label} onPress={() => props.onCommand(item.command)} style={{ padding: 8, borderRadius: 5 }} hoverStyle={{ backgroundColor: theme().palette.panelActive }}><Text style={text()}>{item.label}</Text></View>)}

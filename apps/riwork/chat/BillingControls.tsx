@@ -127,14 +127,14 @@ export type BillingControl = ReturnType<typeof createBillingControl>;
 export function BillingControls(props: { control: BillingControl; theme: () => InterfaceTheme; narrow?: boolean }) {
   const { control, theme } = props;
   const color = () => control.summary().mismatch ? theme().palette.gold : control.summary().on ? theme().palette.working : theme().palette.muted;
-  return <View style={{ display: control.available() ? "flex" : "none" }}>
+  return <View style={{ display: control.available() ? "flex" : "none", flexDirection: "column" }}>
     <View testID="chat-billing" role="switch" focusable={!control.disabled()} tooltip={control.summary().hint}
       accessibilityLabel={control.summary().label} accessibilityHint={control.summary().hint}
       accessibilityState={{ checked: control.summary().on, disabled: control.disabled() }} onPress={control.toggle}
       style={{ height: 27 * theme().scale, paddingHorizontal: 7 * theme().scale, flexDirection: "row", gap: 4 * theme().scale, alignItems: "center", justifyContent: "center", borderRadius: 5,
         opacity: control.disabled() ? 0.4 : 1, backgroundColor: "transparent" }} hoverStyle={{ backgroundColor: theme().palette.panelActive }}>
       <Icon name={control.summary().on ? "key" : "person"} size={11 * theme().scale} color={color()} />
-      {(!props.narrow || control.pending()) && <Text numberOfLines={1} style={{ fontFamily: theme().family, fontSize: 10 * theme().scale, color: color() }}>
+      {(!props.narrow || control.pending()) && <Text style={{ fontFamily: theme().family, fontSize: 10 * theme().scale, color: color(), numberOfLines: 1 }}>
         {control.pending() ? "Switching…" : control.summary().short}
       </Text>}
     </View>
@@ -147,12 +147,12 @@ export function BillingNoticeAction(props: { control: BillingControl; noticeId: 
   const disabled = () => !enter() && control.disabled();
   const label = () => control.pending() ? "Switching…" : enter() ? "Enter API key" : "Use API key";
   const hint = () => enter() ? "Open Settings at the Anthropic API key field." : "Switch this conversation to your saved Anthropic API key. A text-only message rejected by this limit is sent again only if nothing has been sent since.";
-  return <View style={{ display: control.offer(props.noticeId) ? "flex" : "none", flexShrink: 0 }}>
+  return <View style={{ display: control.offer(props.noticeId) ? "flex" : "none", flexDirection: "column", flexShrink: 0 }}>
     <View role="button" focusable={!disabled()} tooltip={hint()} accessibilityLabel={label()} accessibilityHint={hint()}
       accessibilityState={{ disabled: disabled() }} onPress={() => { if (!disabled()) control.useApiKey(props.noticeId); }}
       style={{ minHeight: 23 * theme().scale, paddingHorizontal: 7 * theme().scale, justifyContent: "center", borderRadius: 4,
         opacity: disabled() ? 0.4 : 1, backgroundColor: theme().palette.panelActive }}>
-      <Text numberOfLines={1} style={{ fontFamily: theme().family, fontSize: 10 * theme().scale, color: theme().palette.text }}>{label()}</Text>
+      <Text style={{ fontFamily: theme().family, fontSize: 10 * theme().scale, color: theme().palette.text, numberOfLines: 1 }}>{label()}</Text>
     </View>
   </View>;
 }

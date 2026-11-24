@@ -87,7 +87,9 @@ test("P1-STAT-04: newer notices replace, stay for a minute and dismiss", async (
     await app.host.send("app.fixture.notice", { text: "Second notice" });
     expect(app.shows("text:First notice")).toBe(false);
     expect(app.count("id:workspace-notice")).toBe(1);
-    await app.clock.runFor(60_000);
+    const clock = app.clock;
+    if (!clock) throw new Error("this test needs the manual clock its open() options ask for");
+    await clock.runFor(60_000);
     expect(app.texts()).toContain("Second notice");
     await app.press("label:Dismiss");
     expect(app.shows("id:workspace-notice")).toBe(false);
@@ -163,11 +165,11 @@ test("P5-USAGE-08: the account item opens project choices and closes like the ot
     await app.press("id:status-item-codex-account");
     await app.keyboard.press("escape");
     expect(app.shows("id:account-menu")).toBe(false);
-    // A press outside an open menu closes it, as for the layout and global menus.
+    // A press on another item closes the open menu and opens that item's own: NSH 0.5 dismisses
+    // the overlay before the press lands (0.3 delivered the press first, which left both closed).
     await app.press("id:status-item-layout");
     await app.press("id:status-item-codex-account");
     expect(app.shows("id:layout-menu")).toBe(false);
-    await app.press("id:status-item-codex-account");
     expect(app.shows("id:account-menu")).toBe(true);
     await app.press("id:account-menu-project-settings");
     expect(app.shows("id:account-menu")).toBe(false);

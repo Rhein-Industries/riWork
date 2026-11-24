@@ -1,4 +1,4 @@
-import { Clipboard, List, Scroll, Text, View, cleanup, computed, effect, signal, type YNode } from "nsh";
+import { Clipboard, List, Scroll, Text, View, cleanup, computed, effect, signal, type ListRef } from "nsh";
 import { Input } from "nsh/base";
 import type { ChatChangedFile, ChatFileReview, ChatHandle } from "riwork/native";
 import type { InterfaceTheme } from "../appearance";
@@ -13,7 +13,7 @@ export function FileReview(props: {
   const files = signal<ChatChangedFile[]>([]), selected = signal<string | null>(null), review = signal<ChatFileReview | null>(null);
   const readError = signal(""), reading = signal(false), retry = signal(0);
   const loading = signal(true), filter = signal(""), width = signal(0), hunk = signal(-1);
-  let list: YNode | undefined, alive = true, generation = 0;
+  let list: ListRef | undefined, alive = true, generation = 0;
   cleanup(() => { alive = false; generation++; });
   effect(() => {
     const scope = props.scope(), initial = props.initial();
@@ -47,18 +47,18 @@ export function FileReview(props: {
   }
   // Patch line cells are recycled: each reports its focus under a key of its own.
   let lineCells = 0;
-  return <View testID="chat-file-review" onLayout={(bounds) => width.set(bounds.size.width)} style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
+  return <View testID="chat-file-review" onLayout={({ bounds }) => width.set(bounds.size.width)} style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
     <SideHeader theme={theme} title={() => "Reported file changes"} focus={props.focus} onClose={props.onClose}
       detail={() => `${files().length} ${files().length === 1 ? "file" : "files"} · provider patches`} />
     <View style={{ flex: 1, minHeight: 0, flexDirection: width() > 580 ? "row" : "column" }}>
       <View style={{ width: width() > 580 ? 230 : "100%", maxHeight: width() > 580 ? undefined : 150, borderRightWidth: width() > 580 ? 1 : 0, borderColor: theme().palette.divider, padding: 6, gap: 5 }}>
-        <Input ref={(node) => node.focus()} value={filter()} onChange={(value) => filter.set(value)} placeholder="Filter files" accessibilityLabel="Filter changed files"
+        <Input ref={(node) => node.focus()} value={filter()} onChange={({ value }) => filter.set(value)} placeholder="Filter files" accessibilityLabel="Filter changed files"
           {...props.focus.track("filter")} style={{ ...text(11), padding: 6, borderWidth: 1, borderColor: theme().palette.divider, borderRadius: 4 }} />
         <Scroll style={{ flex: 1, minHeight: 0 }}>
           {shown().map((file) => <View role="button" accessibilityLabel={file.path} accessibilityState={{ selected: selected() === file.id }} onPress={() => selected.set(file.id)}
             {...props.focus.track(`file:${file.id}`)} focusStyle={{ backgroundColor: theme().palette.panelActive }}
             style={{ padding: 8, gap: 4, borderRadius: 4, backgroundColor: selected() === file.id ? theme().palette.panelActive : "transparent" }}>
-            <Text numberOfLines={2} style={{ ...text(11), fontFamily: theme().monoFamily }}>{file.path}</Text>
+            <Text style={{ ...text(11), fontFamily: theme().monoFamily, numberOfLines: 2 }}>{file.path}</Text>
             <Text style={text(10, theme().palette.muted)}>{`${file.kind} · +${file.added} −${file.removed}`}</Text>
           </View>)}
         </Scroll>
@@ -66,7 +66,7 @@ export function FileReview(props: {
       <View style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
         {review() && <>
           <View style={{ padding: 8, gap: 4, borderBottomWidth: 1, borderColor: theme().palette.divider }}>
-            <Text selectable={true} style={{ ...text(12), fontFamily: theme().monoFamily }}>{review()!.file.path}</Text>
+            <Text style={{ ...text(12), fontFamily: theme().monoFamily, userSelect: "text" }}>{review()!.file.path}</Text>
             <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 3 }}>
               {button("Open file", () => props.onOpen(review()!.file.path))}
               {button("Copy patch", () => void Clipboard.writeText(review()!.patch), !review()!.patch)}
@@ -96,7 +96,7 @@ export function FileReview(props: {
                 {...props.focus.track(focusKey)}>
                 <Text style={{ ...text(10, theme().palette.muted), fontFamily: theme().monoFamily, width: 35, textAlign: "right" }}>{line().newLine ?? ""}</Text>
               </View>
-              <Text selectable={true} style={{ ...text(11, line().kind === "add" ? "#3da76d" : line().kind === "remove" ? "#df6870" : line().kind === "hunk" ? theme().palette.cyan : theme().palette.text), fontFamily: theme().monoFamily, flex: 1 }}>{line().text || " "}</Text>
+              <Text style={{ ...text(11, line().kind === "add" ? "#3da76d" : line().kind === "remove" ? "#df6870" : line().kind === "hunk" ? theme().palette.cyan : theme().palette.text), fontFamily: theme().monoFamily, flex: 1, userSelect: "text" }}>{line().text || " "}</Text>
             </View>; }}
           </List>
         </>}

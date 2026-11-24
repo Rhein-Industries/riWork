@@ -51,7 +51,7 @@ use std::{
 use uuid::Uuid;
 
 pub(crate) const APP_ID: &str = "dev.riwork.shell";
-pub(crate) const CAPABILITIES: &str = r#"{"host":["window.*","app.*","system.*"],"clipboard":true,"openUrl":true}"#;
+pub(crate) const CAPABILITIES: &str = r#"{"host":["window.*","app.*","system.*"],"clipboard":true,"openUrl":true,"application":true}"#;
 
 #[cfg(test)]
 #[path = "nsh_remote_tests.rs"]

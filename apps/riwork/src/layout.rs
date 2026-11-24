@@ -2486,7 +2486,7 @@ mod tests {
         }
     }
 
-    /// Use the real NSH 0.3 PaneTree normalizer and gesture implementation,
+    /// Use the real NSH PaneTree normalizer and gesture implementation,
     /// headlessly. No desktop window, runtime home, terminal, or app is opened.
     fn native_fixture(layout: DockLayout) -> (LayoutModel, PaneTree) {
         let tree = PaneTree::from_layout(layout, RootKind::Split);

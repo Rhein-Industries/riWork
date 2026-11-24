@@ -1,4 +1,4 @@
-import { Scroll, Text, View, cleanup, effect, signal, type YNode } from "nsh";
+import { Scroll, Text, View, cleanup, effect, signal, type ViewRef } from "nsh";
 import { Button, Input } from "nsh/base";
 import { Chat, Settings, Store, type NewChatDefaultsDto, type NewChatRequest, type SettingsPatch } from "riwork/native";
 import { space, type InterfaceTheme } from "./appearance";
@@ -77,7 +77,7 @@ export function NewChat(props: NewChatProps) {
   const catalogs = signal<Partial<Record<Provider, NewChatCatalog>>>({});
   const loading = signal(true), pending = signal(false), error = signal("");
   let alive = true, submitted = false;
-  let search: YNode | undefined, focused = false;
+  let search: ViewRef | undefined, focused = false;
   cleanup(() => { alive = false; });
   effect(() => { if (!focused && (props.visible?.() ?? true) && search) { focused = true; search.focus(); } });
   const theme = props.theme;
@@ -183,7 +183,7 @@ export function NewChat(props: NewChatProps) {
       <Text style={text(11, !selected)}>{label}</Text>
     </View>;
   }
-  return <Scroll testID="new-chat-setup" onLayout={(event) => width.set(event.size.width)} style={{ flex: 1, minHeight: 0, backgroundColor: theme().palette.bg }} contentStyle={{ padding: size(PANEL.inset) }}>
+  return <Scroll testID="new-chat-setup" onLayout={({ bounds }) => width.set(bounds.size.width)} style={{ flex: 1, minHeight: 0, backgroundColor: theme().palette.bg }} contentStyle={{ padding: size(PANEL.inset) }}>
     <View style={{ width: "100%", gap: size(18) }}>
     <View style={{ flexDirection: "row", alignItems: "center", gap: size(8) }}><Icon name="chat" size={17 * theme().scale} color={theme().palette.muted} /><Text role="header" style={{ ...text(17), fontWeight: "600" }}>New chat</Text></View>
     <View testID="new-chat-form-grid" style={{ display: "grid", gridTemplateColumns: wide() ? "minmax(0, 1fr) minmax(0, 1fr)" : "minmax(0, 1fr)", gap: size(24), alignItems: "start" }}>
@@ -195,7 +195,7 @@ export function NewChat(props: NewChatProps) {
         style={{ paddingHorizontal: size(9), paddingVertical: size(6), borderRadius: 6, alignItems: "flex-start", backgroundColor: locationIndex() === index ? theme().palette.panelActive : "transparent" }}
         focusStyle={{ borderWidth: 1, borderColor: theme().palette.focus }}><Text style={text(11, locationIndex() !== index)}>{item.label}</Text></Button>)}
     </View>
-    <Text selectable={true} style={{ ...text(10, true), fontFamily: theme().monoFamily }}>{location().cwd}</Text>
+    <Text style={{ ...text(10, true), fontFamily: theme().monoFamily, userSelect: "text" }}>{location().cwd}</Text>
     <Text style={{ ...text(10, true), fontWeight: "600" }}>Permissions</Text>
     <View role="radiogroup" accessibilityLabel="Permissions" style={{ flexDirection: "row", flexWrap: "wrap", gap: 2, padding: 2, borderRadius: 8, backgroundColor: theme().palette.panelActive }}>
       {MODES.filter((item) => provider() !== "acp" || item.id !== "plan").map((item) => choice(`new-chat-mode-${item.id}`, item.label, mode() === item.id, () => mode.set(item.id)))}
@@ -204,18 +204,18 @@ export function NewChat(props: NewChatProps) {
     <View role="radiogroup" accessibilityLabel="Provider" style={{ flexDirection: "row", alignSelf: "flex-start", gap: 2, padding: 2, borderRadius: 8, backgroundColor: theme().palette.panelActive }}>
       {PROVIDERS.map((item) => choice(`new-chat-provider-${item}`, providerName(item), provider() === item, () => chooseProvider(item)))}
     </View>
-    <Input testID="new-chat-model-search" ref={(node) => { search = node; }} accessibilityLabel="Search models" placeholder="Search models" value={query()} onChange={(value) => query.set(value)} disabled={pending()} style={field()} />
+    <Input testID="new-chat-model-search" ref={(node) => { search = node; }} accessibilityLabel="Search models" placeholder="Search models" value={query()} onChange={({ value }) => query.set(value)} disabled={pending()} style={field()} />
     <Scroll testID="new-chat-model-list" style={{ maxHeight: size(180), minHeight: size(32) }} contentStyle={{ gap: 2 }}>
       <View role="radiogroup" accessibilityLabel="Model" style={{ gap: 2 }}>
         {choice("new-chat-model-default", `${providerName(provider())} default`, !model().trim(), () => chooseModel(""))}
         {modelChoices().map((item) => <View testID={`new-chat-model-${item.id}`} role="radio" accessibilityLabel={item.name} accessibilityState={{ checked: model().trim() === item.id }} disabled={pending()} onPress={() => chooseModel(item.id)}
           style={{ paddingHorizontal: size(9), paddingVertical: size(6), gap: 2, borderRadius: 6, backgroundColor: model().trim() === item.id ? theme().palette.panelActive : "transparent" }} hoverStyle={{ backgroundColor: theme().palette.panelActive }}>
-          <Text numberOfLines={1} style={text()}>{`${item.name}${item.isDefault ? " · default" : ""}`}</Text>
-          {item.description && <Text numberOfLines={2} style={text(10, true)}>{item.description}</Text>}
+          <Text style={{ ...text(), numberOfLines: 1 }}>{`${item.name}${item.isDefault ? " · default" : ""}`}</Text>
+          {item.description && <Text style={{ ...text(10, true), numberOfLines: 2 }}>{item.description}</Text>}
         </View>)}
       </View>
     </Scroll>
-    <Input testID="new-chat-model-input" accessibilityLabel="Model ID" placeholder="Or type a model ID" value={model()} onChange={chooseModel} disabled={pending()} style={field()} />
+    <Input testID="new-chat-model-input" accessibilityLabel="Model ID" placeholder="Or type a model ID" value={model()} onChange={({ value }) => chooseModel(value)} disabled={pending()} style={field()} />
     <Text style={text(10, true)}>{loading() ? "Reading saved model choices…" : catalog()?.warning || (catalog()?.supported.length ? `A typed ID is a ${providerName(provider())} model. Availability is checked when the chat starts.` : `Use ${providerName(provider())}'s default, a saved choice, or type a model ID.`)}</Text>
     {provider() === "codex" && catalog()?.accountLabel && <Text style={text(10, true)}>{`Codex account · ${catalog()?.balanced ? "balanced at start (now " : ""}${catalog()!.accountLabel}${catalog()?.balanced ? ")" : ""}`}</Text>}
     {provider() !== "acp" && !!selected()?.efforts.length && <View style={{ gap: 5 }}>
@@ -229,10 +229,10 @@ export function NewChat(props: NewChatProps) {
     </View>
     <View style={{ minWidth: 0, gap: size(12) }}>
     <Text style={{ ...text(12), fontWeight: "600" }}>Conversation</Text>
-    <Input testID="new-chat-title" accessibilityLabel="Chat title" placeholder="Title (optional)" value={title()} onChange={(value) => title.set(value)} disabled={pending()} style={field()} />
+    <Input testID="new-chat-title" accessibilityLabel="Chat title" placeholder="Title (optional)" value={title()} onChange={({ value }) => title.set(value)} disabled={pending()} style={field()} />
     <Text style={{ ...text(10, true), fontWeight: "600" }}>First message</Text>
     <Input testID="new-chat-message" accessibilityLabel="First message" placeholder="Optional: what the chat starts with" multiline={true} autoCorrect={false}
-      value={message()} onChange={(value) => message.set(value)} disabled={pending()} style={{ ...field(), minHeight: size(wide() ? 240 : 120), maxHeight: size(360) }} />
+      value={message()} onChange={({ value }) => message.set(value)} disabled={pending()} style={{ ...field(), minHeight: size(wide() ? 240 : 120), maxHeight: size(360) }} />
     </View>
     </View>
     {(!!error() || !!catalog()?.error) && <Text role="alert" style={{ ...text(11), color: theme().palette.gold }}>{error() || catalog()?.error}</Text>}

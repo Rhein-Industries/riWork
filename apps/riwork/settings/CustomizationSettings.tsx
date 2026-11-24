@@ -17,6 +17,6 @@ export function CustomizationSettings(props: { theme: () => InterfaceTheme; serv
       {button("Reset interface and shortcuts", () => void customization.reset())}
     </View>
     <Text style={{ ...text(), color: props.theme().palette.muted }}>Control–Option–Shift–Escape always restores the default interface and shortcuts. Your tabs and sessions stay in place.</Text>
-    {customization.error() !== "" && <Text testID="customization-settings-error" role="alert" selectable={true} style={{ ...text(), color: props.theme().palette.gold }}>{customization.error()}</Text>}
+    {customization.error() !== "" && <Text testID="customization-settings-error" role="alert" style={{ ...text(), color: props.theme().palette.gold, userSelect: "text" }}>{customization.error()}</Text>}
   </View>;
 }

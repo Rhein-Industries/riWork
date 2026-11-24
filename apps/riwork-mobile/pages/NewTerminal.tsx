@@ -72,7 +72,7 @@ export function NewTerminalForm(props: {
     props.onClose();
     void app.present({ name: "newChat", host: props.host, projectId: props.projectId });
   }
-  return <Dialog open={props.open} presentation="pageSheet" onOpenChange={(open) => { if (!open) close(); }} closeOnSwipe={!busy()} closeOnEscape={!busy()}
+  return <Dialog open={props.open} presentation="pageSheet" onOpenChange={({ open }) => { if (!open) close(); }} closeOnSwipe={!busy()} closeOnEscape={!busy()}
     style={{ backgroundColor: palette().bg }}>
     <View style={{ flexDirection: "row", alignItems: "center", gap: pt(8), padding: pt(12) }}>
       <Action label="Cancel" compact={true} disabled={busy()} action={close} />
@@ -100,7 +100,7 @@ export function NewTerminalForm(props: {
           <View role="radio" accessibilityLabel={`${entry.label}. ${entry.detail}`} accessibilityState={{ checked: target_() === entry.id }}
             disabled={busy()} onPress={() => target_.set(entry.id)} activeStyle={{ backgroundColor: palette().panelActive }}
             style={{ minHeight: target(), padding: pt(12), flexDirection: "row", alignItems: "center", gap: pt(12) }}>
-            <View style={{ flex: 1, gap: pt(2) }}><Text style={text(15)}>{entry.label}</Text><Text numberOfLines={1} style={text(12, "muted")}>{entry.detail}</Text></View>
+            <View style={{ flex: 1, gap: pt(2) }}><Text style={text(15)}>{entry.label}</Text><Text style={{ ...text(12, "muted"), numberOfLines: 1 }}>{entry.detail}</Text></View>
             {target_() === entry.id && <Symbol name="checkmark" color={palette().cyan} size={pt(16)} />}
           </View>
         </>)}

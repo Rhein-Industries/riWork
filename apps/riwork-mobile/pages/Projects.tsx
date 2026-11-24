@@ -4,7 +4,7 @@
  * iPad it is the window's sidebar, drawn as the Mac's Projects panel (`apps/riwork/Panels.tsx`): a header
  * with Sort and New project, the search, the folders, and a row per project of its name and what its agents
  * are doing, the project on screen on the rounded highlight with ＋ and its ⋯. */
-import { Scroll, Text, View, cleanup, computed, effect, keyboardFrame, keymap, signal, untracked, type YNode } from "nsh";
+import { Scroll, Text, View, cleanup, computed, effect, keyboardFrame, keymap, signal, untracked, type ScrollRef, type ViewRef } from "nsh";
 import { AlertDialog, Input, type AlertDialogAction } from "nsh/base";
 import { Icon } from "../../riwork/Icon";
 import { PortError } from "../../riwork/client/ports";
@@ -39,8 +39,8 @@ export function ProjectsPage(props: {
   const sortOpen = signal(false), creating = signal(false), searchFocused = signal(false);
   const highlighted = signal<string | null>(null);
   const touched = signal<Record<string, number>>({});
-  const projectRefs = new Map<string, YNode>();
-  let searchInput: YNode | undefined, scroll: YNode | undefined, scrollY = 0;
+  const projectRefs = new Map<string, ViewRef>();
+  let searchInput: ViewRef | undefined, scroll: ScrollRef | undefined, scrollY = 0;
   let alive = true;
   cleanup(() => { alive = false; });
   const connected = () => app.link(hostId).state === "connected";
@@ -147,8 +147,8 @@ export function ProjectsPage(props: {
         style={{ flex: 1, minHeight: target(), padding: pt(14), paddingLeft: pt(14 + row.depth * 14), flexDirection: "row", alignItems: "center", gap: pt(12) }}>
         <Symbol name="folder" color={palette().cyan} size={pt(22)} />
         <View style={{ flex: 1, gap: pt(4) }}>
-          <Text numberOfLines={1} style={{ ...text(16), fontWeight: "500" }}>{row.project.name}</Text>
-          <Text numberOfLines={1} style={text(12, "muted")}>{row.project.root}</Text>
+          <Text style={{ ...text(16), fontWeight: "500", numberOfLines: 1 }}>{row.project.name}</Text>
+          <Text style={{ ...text(12, "muted"), numberOfLines: 1 }}>{row.project.root}</Text>
           {activity() && <Text style={text(12, activity()!.tone)}>{activity()!.text}</Text>}
         </View>
         {props.layout === "phone" && <Symbol name="chevron.right" color={palette().muted} size={pt(13)} />}
@@ -180,7 +180,7 @@ export function ProjectsPage(props: {
   async function sortMenu() {
     const actions: AlertDialogAction[] = PROJECT_SORTS.map((choice) => ({ id: choice.value, label: choice.value === sort() ? `${choice.label} ✓` : choice.label }));
     actions.push({ id: "cancel", label: "Cancel", role: "cancel" });
-    const choice = await AlertDialog.show({ title: "Sort projects", presentation: "actionSheet", actions }).catch(() => null);
+    const choice = (await AlertDialog.show({ title: "Sort projects", presentation: "actionSheet", actions }).catch(() => null))?.action;
     if (alive && choice && choice !== "cancel") chooseSort(projectSort(choice));
   }
   /** The ⋯ of the project on screen: what the Mac's row and its page offer that this device does. */
@@ -191,7 +191,7 @@ export function ProjectsPage(props: {
     if (features.includes("tabs")) actions.push({ id: "open", label: "Open a worker or shell…" });
     if (features.includes("project_memo")) actions.push({ id: "memo", label: "Memo…" });
     actions.push({ id: "cancel", label: "Cancel", role: "cancel" });
-    const choice = await AlertDialog.show({ title: project.name, description: project.root, presentation: "actionSheet", actions }).catch(() => null);
+    const choice = (await AlertDialog.show({ title: project.name, description: project.root, presentation: "actionSheet", actions }).catch(() => null))?.action;
     if (!alive || !choice || choice === "cancel") return;
     props.onOpen?.();
     if (choice === "new") open(project, true);
@@ -212,8 +212,8 @@ export function ProjectsPage(props: {
         activeStyle={{ backgroundColor: palette().panelActive }} onPress={() => open(row.project)}
         style={{ flex: 1, minWidth: 0, minHeight: target(), justifyContent: "center", gap: pt(2), paddingVertical: pt(7),
           paddingLeft: pt(10 + row.depth * 20), paddingRight: pt(6), borderRadius: pt(10) }}>
-        <Text numberOfLines={1} style={text(15)}>{row.project.name}</Text>
-        {summary() && <Text numberOfLines={1} style={text(13, "muted")}>{summary()}</Text>}
+        <Text style={{ ...text(15), numberOfLines: 1 }}>{row.project.name}</Text>
+        {summary() && <Text style={{ ...text(13, "muted"), numberOfLines: 1 }}>{summary()}</Text>}
       </View>
       {current() && <>
         <Tool testID={`project-new-terminal:${row.project.id}`} icon="add" label={`New terminal in ${row.project.name}`} disabled={disabled()} action={() => open(row.project, true)} />
@@ -227,7 +227,7 @@ export function ProjectsPage(props: {
       accessibilityState={{ expanded: !collapsed().has(folderId) }} onPress={() => toggle(folderId)} activeStyle={{ backgroundColor: palette().panelActive }}
       style={{ minHeight: target(), paddingLeft: pt(10 + row.depth * 20), paddingRight: pt(12), flexDirection: "row", alignItems: "center", gap: pt(8), borderRadius: pt(10) }}>
       <Icon name={collapsed().has(folderId) ? "right" : "down"} size={pt(12)} color={palette().muted} />
-      <Text numberOfLines={1} style={{ ...text(13, "muted"), fontWeight: "600", flex: 1 }}>{row.name}</Text>
+      <Text style={{ ...text(13, "muted"), fontWeight: "600", flex: 1, numberOfLines: 1 }}>{row.name}</Text>
       <Text style={text(12, "muted")}>{String(row.count).padStart(2, "0")}</Text>
     </View>;
   }
@@ -243,8 +243,8 @@ export function ProjectsPage(props: {
     return <View testID={`page:projects:${hostId}`} style={{ flex: 1, minHeight: 0, backgroundColor: palette().panel }}>
       <View style={{ minHeight: pt(62), paddingLeft: pt(16), paddingRight: pt(6), flexDirection: "row", alignItems: "center" }}>
         <View style={{ flex: 1, minWidth: 0, gap: pt(1) }}>
-          <Text role="header" numberOfLines={1} style={{ ...text(17), fontWeight: "600" }}>Projects</Text>
-          <Text numberOfLines={1} style={text(13, "muted")}>{list() || tree() ? count() : connected() ? "Reading…" : app.link(hostId).label}</Text>
+          <Text role="header" style={{ ...text(17), fontWeight: "600", numberOfLines: 1 }}>Projects</Text>
+          <Text style={{ ...text(13, "muted"), numberOfLines: 1 }}>{list() || tree() ? count() : connected() ? "Reading…" : app.link(hostId).label}</Text>
         </View>
         <Tool testID="sort-projects" icon="sort" label={`Sort projects: ${PROJECT_SORTS.find((choice) => choice.value === sort())!.label}`}
           disabled={app.blocked() || projects().length < 2} action={() => void sortMenu()} />
@@ -255,7 +255,7 @@ export function ProjectsPage(props: {
           paddingRight: query() ? 0 : pt(14), borderRadius: target() / 2, backgroundColor: palette().panelActive }}>
           <Icon name="search" size={pt(17)} color={palette().muted} />
           <Input ref={(node) => { searchInput = node; }} accessibilityLabel="Search projects" placeholder={keyboard().hardware ? "Search  ⌘F" : "Search"} value={query()}
-            onChange={(value) => query.set(value)} onFocus={() => searchFocused.set(true)} onBlur={() => searchFocused.set(false)}
+            onChange={({ value }) => query.set(value)} onFocus={() => searchFocused.set(true)} onBlur={() => searchFocused.set(false)}
             autoCapitalize="none" autoCorrect={false} returnKeyType="search"
             style={{ ...text(15), flex: 1, minWidth: 0, padding: 0, backgroundColor: "transparent" }} />
           {query() !== "" && <Tool icon="close" label="Clear the search" action={() => { query.set(""); searchInput?.focus(); }} />}
@@ -292,7 +292,7 @@ export function ProjectsPage(props: {
       {failure() && <Note message={list() ? `Saved projects · ${failure()}` : failure()} error={!list()} />}
       {!connected() && <Note message={`${app.link(hostId).label}. ${list() ? "These projects are from the last read." : "Connect to this desktop to list its projects."}`} />}
       <Input ref={(node) => { searchInput = node; }} accessibilityLabel="Search projects" placeholder="Search projects" value={query()}
-        onChange={(value) => query.set(value)} onFocus={() => searchFocused.set(true)} onBlur={() => searchFocused.set(false)}
+        onChange={({ value }) => query.set(value)} onFocus={() => searchFocused.set(true)} onBlur={() => searchFocused.set(false)}
         autoCapitalize="none" autoCorrect={false} returnKeyType="search"
         style={{ ...text(16), minHeight: target(), paddingHorizontal: pt(14), paddingVertical: pt(10), backgroundColor: palette().panel, borderRadius: pt(11) }} />
       {projects().length > 1 && <View style={{ flexDirection: "row", flexWrap: "wrap" }}>

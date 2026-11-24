@@ -1,5 +1,5 @@
 {
   "name": "Somtus remote headless fixtures",
   "id": "dev.riwork.test.remote",
-  "capabilities": { "host": ["app.fixture.*", "window.*", "system.*"], "clipboard": true }
+  "capabilities": { "host": ["app.fixture.*", "window.*", "system.*"], "clipboard": true, "application": true }
 }

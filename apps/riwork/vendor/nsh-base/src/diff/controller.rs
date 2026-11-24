@@ -189,6 +189,9 @@ pub(crate) struct State {
     pub(crate) annotation_heights: HashMap<SharedString, Points>,
     /// A patch's files (none for two texts).
     pub(crate) files: Files,
+    /// Each change's last row takes a row below it for the app's hunk
+    /// actions (a terminal's: placed over the rows, they would cover code).
+    pub(crate) action_rows: bool,
 }
 
 impl State {
@@ -216,6 +219,7 @@ impl State {
             placed: Vec::new(),
             annotation_heights: HashMap::new(),
             files: Files::default(),
+            action_rows: false,
         }
     }
 
@@ -395,6 +399,16 @@ impl State {
                 extra[row] = extra[row].max(*below);
             }
         }
+        if self.action_rows {
+            for (row, height) in extra.iter_mut().enumerate().take(self.rows.len()) {
+                if let Some(Row::Line { hunk: Some(h), .. }) = self.rows.get(row) {
+                    let ends = !matches!(self.rows.get(row + 1), Some(Row::Line { hunk: Some(n), .. }) if n == h);
+                    if ends {
+                        *height += self.font.line_height;
+                    }
+                }
+            }
+        }
         self.geometry = Geometry::new(&self.row_lines, &extra, self.font.line_height);
         for (row, top) in self.placed.iter_mut().flatten() {
             *top += self.geometry.top(*row) + self.geometry.text_height(*row);
@@ -515,9 +529,34 @@ impl State {
     /// The width of a number column.
     pub(crate) fn number_width(&self) -> Points {
         let last = self.old.last_number().max(self.new.last_number());
-        let digits = (last.max(1).ilog10() as usize + 1).max(2);
-        self.column * digits as f32
+        number_column(self.column, last)
     }
+}
+
+/// The font as the platform draws the view's texts: the app's size and row
+/// height grown by the user's text size, as the core grows every text's
+/// (`fontScale`; a terminal's Cells stay as they are). Columns, rows and the
+/// sides' widths are measured in it, so a line fits the box it is drawn in.
+fn drawn_font(family: SharedString, size: Points, line_height: Points) -> Font {
+    let scale = match crate::terminal::is_terminal() {
+        true => 1.0,
+        false => nsh_core::element::font_scale(),
+    };
+    Font {
+        family,
+        size: size * scale,
+        line_height: crate::terminal::row_height(line_height * scale),
+    }
+}
+
+/// The width of a number column up to the number `last`, at least two digits
+/// wide, in columns of `column`.
+fn number_column(column: Points, last: usize) -> Points {
+    let digits = (last.max(1).ilog10() as usize + 1).max(2);
+    // `column` is an average with a fraction; the platforms round a text's
+    // measured width up, so the column holds its number with a point to spare
+    // (exactly `digits` columns cut the number off).
+    (column * digits as f32 + px(0.5)).ceil()
 }
 
 /// The cell of `line` of `side`.
@@ -573,7 +612,7 @@ pub(crate) fn spans(
                 column += n;
             } else {
                 piece.push(c);
-                column += 1;
+                column += char_columns(c);
             }
         }
         match out.last_mut() {
@@ -648,7 +687,7 @@ pub(crate) fn expand_tabs(line: &str) -> std::borrow::Cow<'_, str> {
             column += n;
         } else {
             out.push(c);
-            column += 1;
+            column += char_columns(c);
         }
     }
     out.into()
@@ -657,9 +696,22 @@ pub(crate) fn expand_tabs(line: &str) -> std::borrow::Cow<'_, str> {
 fn display_columns(line: &str) -> usize {
     let mut column = 0;
     for c in line.chars() {
-        column += if c == '\t' { TAB - column % TAB } else { 1 };
+        column += if c == '\t' {
+            TAB - column % TAB
+        } else {
+            char_columns(c)
+        };
     }
     column
+}
+
+/// The columns of `0` that `c` takes: two for wide characters (CJK,
+/// fullwidth forms, emoji), none for combining marks, else one. Fonts draw
+/// a wide character about as wide as two narrow ones; counting it as one
+/// would make a side's box narrower than its text, which then wraps over
+/// the rows below it.
+pub(crate) fn char_columns(c: char) -> usize {
+    unicode_width::UnicodeWidthChar::width(c).unwrap_or(0)
 }
 
 /// The diff view's controller: a clone shares everything.
@@ -703,11 +755,14 @@ pub(crate) struct Dv {
 
 impl Dv {
     pub(crate) fn new(props: DiffViewProps, cx: Scope<DiffViewEvent>) -> Dv {
-        let font = Font {
-            family: font_family(props.font_family.get_untracked()),
-            size: props.font_size.get_untracked(),
-            line_height: props.line_height.get_untracked(),
-        };
+        // Untracked as the props: `follow_props` measures again on a change.
+        let font = untracked(|| {
+            drawn_font(
+                font_family(props.font_family.get_untracked()),
+                props.font_size.get_untracked(),
+                props.line_height.get_untracked(),
+            )
+        });
         let dv = Dv {
             st: Rc::new(RefCell::new(State::new(font))),
             props,
@@ -731,6 +786,8 @@ impl Dv {
             rows_window: Default::default(),
         };
         dv.follow_props();
+        dv.report_scroll();
+        dv.report_hunk_bounds();
         dv
     }
 
@@ -746,11 +803,12 @@ impl Dv {
     fn follow_props(&self) {
         let dv = self.clone();
         effect(move || {
-            let font = Font {
-                family: font_family(dv.props.font_family.get()),
-                size: dv.props.font_size.get(),
-                line_height: dv.props.line_height.get(),
-            };
+            // The user's text size (`fontScale`) too: the texts grow with it.
+            let font = drawn_font(
+                font_family(dv.props.font_family.get()),
+                dv.props.font_size.get(),
+                dv.props.line_height.get(),
+            );
             {
                 let mut st = dv.st.borrow_mut();
                 st.column = crate::editor::controller::text_width(&font.css(), "0");
@@ -758,6 +816,20 @@ impl Dv {
                 let soft_wrap = dv.props.soft_wrap.get_untracked();
                 st.wrap_columns = wrap_columns(soft_wrap, st.text_box, st.column);
                 st.measure_rows();
+            }
+            dv.bump();
+        });
+        let dv = self.clone();
+        effect(move || {
+            let rows =
+                crate::terminal::is_terminal() && dv.props.render_hunk_actions.get().is_some();
+            {
+                let mut st = dv.st.borrow_mut();
+                if st.action_rows == rows {
+                    return;
+                }
+                st.action_rows = rows;
+                st.place();
             }
             dv.bump();
         });
@@ -851,7 +923,37 @@ impl Dv {
         }
     }
 
+    // A ref's command cannot throw: a change, gap or file the diff does
+    // not have does nothing and is logged.
+
+    fn has_hunk(&self, method: &str, index: usize) -> bool {
+        let count = self.st.borrow().model.hunks.len();
+        if index >= count {
+            log::warn!("DiffView.{method}: change {index} out of range (the diff has {count})");
+        }
+        index < count
+    }
+
+    fn has_gap(&self, method: &str, gap: usize) -> bool {
+        let count = self.st.borrow().model.hunks.len() + 1;
+        if gap >= count {
+            log::warn!("DiffView.{method}: separator {gap} out of range (the diff has {count})");
+        }
+        gap < count
+    }
+
+    fn has_file(&self, method: &str, path: &str) -> bool {
+        let has = self.st.borrow().files.index(path).is_some();
+        if !has {
+            log::warn!("DiffView.{method}: no file `{path}` in the diff");
+        }
+        has
+    }
+
     pub(crate) fn go_to_hunk(&self, index: usize) {
+        if !self.has_hunk("goToHunk", index) {
+            return;
+        }
         let collapsed = self.st.borrow().files.collapsed_file_of_hunk(index);
         if let Some(path) = collapsed {
             self.set_file_collapsed(&path, Some(false));
@@ -867,6 +969,9 @@ impl Dv {
     }
 
     pub(crate) fn revert_hunk(&self, index: usize) {
+        if !self.has_hunk("revertHunk", index) {
+            return;
+        }
         let change = {
             let st = self.st.borrow();
             let Some(hunk) = st.model.hunks.get(index) else {
@@ -881,6 +986,9 @@ impl Dv {
     }
 
     pub(crate) fn accept_hunk(&self, index: usize) {
+        if !self.has_hunk("acceptHunk", index) {
+            return;
+        }
         let change = {
             let st = self.st.borrow();
             let Some(hunk) = st.model.hunks.get(index) else {
@@ -919,6 +1027,9 @@ impl Dv {
     }
 
     pub(crate) fn expand(&self, gap: usize, direction: DiffExpand, lines: usize) {
+        if !self.has_gap("expand", gap) {
+            return;
+        }
         {
             let mut st = self.st.borrow_mut();
             match direction {
@@ -963,6 +1074,14 @@ impl Dv {
     /// Collapses, expands or toggles (`None`) the file at `path`, and
     /// reports it when that changed it.
     pub(crate) fn set_file_collapsed(&self, path: &str, collapsed: Option<bool>) {
+        let method = match collapsed {
+            Some(true) => "collapseFile",
+            Some(false) => "expandFile",
+            None => "toggleFile",
+        };
+        if !self.has_file(method, path) {
+            return;
+        }
         let file = {
             let mut st = self.st.borrow_mut();
             let Some(file) = st.files.set_collapsed(path, collapsed) else {
@@ -977,6 +1096,9 @@ impl Dv {
     }
 
     pub(crate) fn scroll_to_file(&self, path: &str) {
+        if !self.has_file("scrollToFile", path) {
+            return;
+        }
         let y = {
             let st = self.st.borrow();
             let Some(row) = st
@@ -1004,15 +1126,7 @@ impl Dv {
         }
         let dv = self.clone();
         spawn(async move {
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                let _ = blocking(Highlighter::load).await;
-            }
-            #[cfg(target_arch = "wasm32")]
-            {
-                next_frame().await;
-                Highlighter::load();
-            }
+            Highlighter::load_async().await;
             dv.st.borrow_mut().make_highlighters();
             dv.schedule_highlight();
         });
@@ -1139,6 +1253,32 @@ mod tests {
         let spans = spans("ab\tc", &[], &changed);
         let texts: Vec<_> = spans.iter().map(|s| (s.text.as_str(), s.changed)).collect();
         assert_eq!(texts, vec![("a", false), ("b", true), ("  c", false)]);
+    }
+
+    #[test]
+    fn wide_characters_take_two_columns() {
+        assert_eq!(display_columns("a中文"), 5);
+        assert_eq!(display_columns("中\tb"), 5);
+        assert_eq!(expand_tabs("中\tb"), "中  b");
+        let side = Side::new("中文\nab\n".to_string(), Vec::new());
+        assert_eq!(side.columns, 4);
+    }
+
+    #[test]
+    fn a_number_column_holds_its_number_with_room_to_spare() {
+        // Menlo's `0` at 12 points: 7.2, which the numbers below would just
+        // not fit in, as #804 showed on iOS, at exactly their digits' columns.
+        for (last, digits, width) in [
+            (9, 2, 15.0),
+            (11, 2, 15.0),
+            (101, 3, 23.0),
+            (1001, 4, 30.0),
+            (10001, 5, 37.0),
+        ] {
+            let got = number_column(px(7.2), last);
+            assert_eq!(got, px(width), "up to {last}");
+            assert!(got >= px(7.2) * digits as f32 + px(0.5), "up to {last}");
+        }
     }
 
     #[test]

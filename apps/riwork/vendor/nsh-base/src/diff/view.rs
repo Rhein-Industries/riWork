@@ -83,14 +83,6 @@ impl Column {
 pub(crate) fn render(dv: Dv) -> impl IntoElement {
     let props = dv.props;
     let (scroll_dv, layout_dv) = (dv.clone(), dv.clone());
-    let font = {
-        let dv = dv.clone();
-        move || {
-            dv.rev.get();
-            dv.st.borrow().font.clone()
-        }
-    };
-    let (font_a, font_b, font_c) = (font.clone(), font.clone(), font);
     let height = {
         let dv = dv.clone();
         move || dv.rows_height()
@@ -102,9 +94,13 @@ pub(crate) fn render(dv: Dv) -> impl IntoElement {
         .relative()
         .overflow_hidden()
         .text_color(move || theme().foreground)
-        .font_family(move || font_a().family)
-        .text_size(move || Length::from(font_b().size))
-        .line_height(move || Length::from(font_c().line_height))
+        // The app's own font: the core grows it by the user's text size, as the
+        // controller's `drawn_font` measures it.
+        .font_family(move || crate::editor::controller::font_family(props.font_family.get()))
+        .text_size(move || Length::from(props.font_size.get()))
+        .line_height(move || {
+            nsh_core::LineHeight::from(crate::terminal::row_height(props.line_height.get()))
+        })
         .child(
             scroll()
                 .element_ref(&dv.vscroll)
@@ -342,8 +338,8 @@ fn row_place(dv: &Dv, row: usize, column: Column, part: HoverPart) -> View {
         .right_0()
         .top(move || Length::from(top.row_top(row)))
         .h(move || Length::from(height.row_height(row)))
-        .on_hover_in(move || hover_in.hover_in(row, part, column.side()))
-        .on_hover_out(move || hover_out.hover_out(row, part))
+        .on_mouse_enter(move |_: &MouseEvent| hover_in.hover_in(row, part, column.side()))
+        .on_mouse_leave(move |_: &MouseEvent| hover_out.hover_out(row, part))
 }
 
 /// The tint of selected lines over row `row` of `column`, while they are.
@@ -513,7 +509,9 @@ fn content(dv: Dv, column: Column, rows: Memo<Vec<usize>>) -> impl IntoElement {
         let dv = dv.clone();
         move || {
             dv.rev.get();
-            if props.soft_wrap.get() {
+            // A terminal's side is as wide as its box, its lines cut
+            // short with `…` at its edge ([`line_row`]).
+            if props.soft_wrap.get() || crate::terminal::is_terminal() {
                 return Length::from(relative(1.0));
             }
             let st = dv.st.borrow();
@@ -548,7 +546,12 @@ fn content(dv: Dv, column: Column, rows: Memo<Vec<usize>>) -> impl IntoElement {
     }
     el.child(
         part(
+            // Each side's text is a selectable area of its own: a drag
+            // selects the code across its rows, never into the other side
+            // of a split view, and the gutter's numbers and signs, the
+            // separators and the app's controls (all outside it) stay out.
             view()
+                .selectable(true)
                 .relative()
                 .min_w(relative(1.0))
                 .w(width)
@@ -589,6 +592,7 @@ fn line_row(
             // The columns lines wrap at change with the box's width (`rev`),
             // the cell staying as it was.
             wrap.rev.get();
+            let wrapped = wrap.st.borrow().wrap_columns.is_some();
             let lines = match wrap.st.borrow().wrap_columns {
                 Some(columns) => {
                     let joined: String = cell.spans.iter().map(|s| s.text.as_str()).collect();
@@ -611,28 +615,39 @@ fn line_row(
                     .map(|span| span_view(props, span, tint))
                     .collect::<Vec<_>>();
                 let lh = lh.clone();
-                el = el.child(
-                    text("")
-                        .selection_color(selection_color)
-                        .absolute()
-                        .top(move || Length::from(lh() * index as f32))
-                        .left(px(PAD))
-                        .children(spans),
-                );
+                // The code's lines select across rows in the side's area
+                // ([`content`]); a filler (no line on this side) stays out,
+                // so a copy has no blank line for it.
+                // The platform's own highlight: the line selection's tint is
+                // the theme's selection color, and the two stay apart.
+                let line = text("")
+                    .when(tint != Tint::Filler, |t| t.select_text())
+                    // A wrapped line's later parts continue its first:
+                    // a copy gives the line whole.
+                    .when(index > 0, |t| t.continues_text(true))
+                    .absolute()
+                    .top(move || Length::from(lh() * index as f32))
+                    .left(px(PAD))
+                    .children(spans);
+                // In a terminal every line, changed or not, ends in `…`
+                // where the side cuts it, as a terminal's diff shows a
+                // line too long for its pane (its side is as wide as its
+                // box: [`content`]).
+                // Elsewhere an unwrapped line stays one line: the side is as
+                // wide as its longest line measured, and a text the platform
+                // draws a little wider is cut there, never wrapped over the
+                // next row.
+                el = el.child(match (wrapped, crate::terminal::is_terminal()) {
+                    (false, true) => line.right(px(PAD)).truncate(),
+                    (false, false) => line
+                        .number_of_lines(1u32)
+                        .text_overflow(nsh_core::EllipsizeMode::Clip),
+                    (true, _) => line,
+                });
             }
             Some(el)
         }))
         .child(tint_el)
-}
-
-/// The highlight of the code's selected text: the lines' selection color.
-fn selection_color() -> Hsla {
-    let color = theme().selection();
-    if nsh_core::element::ambient::dark() {
-        color.dark
-    } else {
-        color.light
-    }
 }
 
 fn span_view(props: DiffViewProps, span: Span, tint: Tint) -> AnyElement {
@@ -737,7 +752,8 @@ fn separator(
     .into_element()
 }
 
-/// The app's actions of the changes whose first row is in view.
+/// The app's actions of the changes whose first row is in view (in a
+/// terminal, whose last row is: they take a row of their own below it).
 fn hunk_actions(dv: Dv, rows: Memo<Vec<usize>>) -> impl IntoElement {
     let props = dv.props;
     let list = {
@@ -755,7 +771,14 @@ fn hunk_actions(dv: Dv, rows: Memo<Vec<usize>>) -> impl IntoElement {
                     let Row::Line { hunk: Some(h), .. } = st.rows.get(row)? else {
                         return None;
                     };
-                    let starts = match row.checked_sub(1).and_then(|r| st.rows.get(r)) {
+                    // A terminal's actions take the row after the change's
+                    // last (`State::action_rows`), others overlay its first.
+                    let neighbour = if st.action_rows {
+                        st.rows.get(row + 1)
+                    } else {
+                        row.checked_sub(1).and_then(|r| st.rows.get(r))
+                    };
+                    let starts = match neighbour {
                         Some(Row::Line { hunk: Some(p), .. }) => p != h,
                         _ => true,
                     };
@@ -775,10 +798,16 @@ fn hunk_actions(dv: Dv, rows: Memo<Vec<usize>>) -> impl IntoElement {
             // A stable view per change, which `each` keeps while the change
             // stays in view.
             part(
-                view()
-                    .absolute()
-                    .right(px(PAD))
-                    .top(move || Length::from(top.row_top(row))),
+                view().absolute().right(px(PAD)).top(move || {
+                    // A terminal's: the row it takes after the change (and
+                    // its annotations).
+                    let at = if top.st.borrow().action_rows {
+                        top.row_top(row + 1) - top.st.borrow().font.line_height
+                    } else {
+                        top.row_top(row)
+                    };
+                    Length::from(at)
+                }),
                 props,
                 DiffViewPart::HunkActions,
             )
@@ -877,8 +906,10 @@ fn add_controls(dv: Dv) -> impl IntoElement {
                 // Only the app's control takes presses: the gutter under
                 // the rest of the box keeps them.
                 .pointer_events(PointerEvents::BoxNone)
-                .on_hover_in(move || keep.hover_in(row, HoverPart::Control, Some(side)))
-                .on_hover_out(move || out.hover_out(row, HoverPart::Control));
+                .on_mouse_enter(move |_: &MouseEvent| {
+                    keep.hover_in(row, HoverPart::Control, Some(side))
+                })
+                .on_mouse_leave(move |_: &MouseEvent| out.hover_out(row, HoverPart::Control));
             el = if split && side == DiffSide::New {
                 el.left(relative(0.5))
             } else {

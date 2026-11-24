@@ -8,7 +8,9 @@ interface WorkspaceDockAreaProps extends DockAreaProps {
   dividerSize?: number;
   fixedPanels?: string[];
   draggableTabBars?: number[];
-  onDragChange?: (dragging: boolean) => void;
+  // Every handler takes one object since NSH 0.4. The vendored event has to be
+  // `#[args(dragging)] DragChange(bool)`: left bare, its field would be `value`.
+  onDragChange?: (event: { dragging: boolean }) => void;
   renderTabBarPrefix?: (groupId: number) => JSX.Element;
   renderTabBarSuffix?: (groupId: number) => JSX.Element;
 }

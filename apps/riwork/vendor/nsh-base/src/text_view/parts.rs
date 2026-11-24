@@ -116,7 +116,7 @@ parts! {
     /// The row of a code block's actions (`codeBlockActions`), floating
     /// over its top right corner (only with actions).
     code_block_header => CodeBlockHeader,
-    /// The horizontal scroll view of a code block's code.
+    /// The horizontal scroll view of unwrapped code (`wrap: false`).
     code_block_scroll => CodeBlockScroll,
     /// The code of a code block (monospace, as written).
     code_block_code => CodeBlockCode,
@@ -148,10 +148,11 @@ parts! {
     /// in a line of text, the size they ask for, else three quarters of a
     /// line tall.
     image => Image,
-    /// Formulas in text, without a `renderMath` (their TeX, monospace).
+    /// Formulas in text, without a `renderMath` (typeset; TeX it cannot
+    /// read monospace).
     math => Math,
-    /// Formula blocks, without a `renderMath` (their TeX, monospace, in a
-    /// box as a code block's).
+    /// Formula blocks, without a `renderMath` (typeset and centered; TeX it
+    /// cannot read monospace, in a box as a code block's).
     math_block => MathBlock,
     /// Tables (a column: the app's `renderTableActions`, then the
     /// scroll view of the cells).

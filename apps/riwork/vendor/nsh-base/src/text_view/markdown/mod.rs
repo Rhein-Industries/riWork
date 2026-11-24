@@ -5,13 +5,24 @@
 //! The source goes through four steps: the end of a streamed reply is
 //! repaired (`streaming.rs`), TeX's `\(…\)` and `\[…\]` are rewritten as
 //! dollars (`latex.rs`), declared containers are cut out (`container.rs`)
-//! (syntax `markdown-rs` lacks), then each Markdown part is parsed and its
-//! tree converted. Definitions and footnotes are
+//! (syntax `markdown-rs` lacks), then each Markdown part is parsed, with
+//! bare URLs ending where CJK text starts (`autolink.rs`) and emphasis
+//! beside CJK text read as the CJK-friendly rule reads it (`cjk.rs`), and
+//! its tree converted. Definitions and footnotes are
 //! collected from the trees first, so references resolve wherever they
 //! stand and footnotes are numbered by their first reference.
+//!
+//! A view whose text grows at its end (a reply still arriving) reads it
+//! from where it can still change and keeps the blocks before
+//! (`incremental.rs`); [`parse`] reads a whole text and is what that is
+//! held to.
 
+mod autolink;
+mod cjk;
 mod container;
+mod incremental;
 mod latex;
+mod offsets;
 mod streaming;
 #[cfg(test)]
 mod tests;
@@ -23,8 +34,11 @@ use markdown::{
     mdast::{self, AlignKind, AttributeContent, AttributeValue, Node},
 };
 
-use self::container::Segment;
-pub(crate) use self::streaming::repair_streaming;
+use self::{container::Segment, offsets::Inserted};
+pub(crate) use self::{
+    incremental::{Incremental, Parsed, SharedBlock},
+    streaming::repair_streaming,
+};
 use super::{
     Parser,
     common::{self, Slugger},
@@ -35,6 +49,7 @@ use super::{
     extension::{ParseContext, ReadChildren},
     html,
 };
+use crate::mdast_tree::{Mdast, plain_text};
 
 /// How deep blocks and inline content are read: deeper content is text.
 const MAX_DEPTH: usize = 32;
@@ -103,10 +118,11 @@ pub(crate) fn parse(parser: &Parser, source: &str) -> Document {
     Document { blocks, footnotes }
 }
 
-/// A Markdown part of the source and its syntax tree.
+/// A Markdown part of the source and its syntax tree, whose positions are
+/// offsets in it.
 struct Tree<'s> {
-    source: Cow<'s, str>,
-    root: Node,
+    source: &'s str,
+    root: Mdast,
 }
 
 fn parse_trees<'s>(
@@ -126,10 +142,29 @@ fn parse_trees<'s>(
     }
 }
 
-/// Markdown `text` parsed (`first`: the document's start).
+/// Markdown `text` parsed (`first`: the document's start). What is inserted
+/// before parsing (ends of bare URLs, marks beside emphasis, escapes of
+/// prose `$`) is taken out
+/// of the tree again (`offsets.rs`): its positions are offsets in `text`.
 fn tree<'s>(parser: &Parser, text: &'s str, first: bool) -> Tree<'s> {
-    let mut source = Cow::Borrowed(text);
-    let mut root = parse_tree(parser, &source, first);
+    let mut inserted = Inserted::default();
+    let mut ends = Vec::new();
+    let ended = if parser.options.mdx {
+        // MDX has no autolink literals.
+        Cow::Borrowed(text)
+    } else {
+        autolink::end_urls(text, &mut ends)
+    };
+    inserted.insert(&ends, autolink::END.len_utf8());
+    let mut marks = Vec::new();
+    let marked = match cjk::mark(&ended, &mut marks) {
+        Cow::Owned(marked) => Some(marked),
+        Cow::Borrowed(_) => None,
+    };
+    let mut source = marked.map_or(ended, Cow::Owned);
+    inserted.insert(&marks, cjk::MARK.len_utf8());
+    let strip = !ends.is_empty() || !marks.is_empty();
+    let mut root = Mdast(parse_tree(parser, &source, first));
     if parser.options.math {
         // Pairs of `$` that are prose: their opening `$` escaped, the text
         // is read again, as a whole (emphasis may span the pair); a
@@ -140,19 +175,25 @@ fn tree<'s>(parser: &Parser, text: &'s str, first: bool) -> Tree<'s> {
             if opens.is_empty() {
                 break;
             }
+            opens.sort_unstable();
+            opens.dedup();
             let mut escaped = String::with_capacity(source.len() + opens.len());
             let mut at = 0;
-            for open in opens {
+            for &open in &opens {
                 escaped.push_str(&source[at..open]);
                 escaped.push('\\');
                 at = open;
             }
             escaped.push_str(&source[at..]);
-            root = parse_tree(parser, &escaped, first);
+            inserted.insert(&opens, 1);
+            root = Mdast(parse_tree(parser, &escaped, first));
             source = Cow::Owned(escaped);
         }
     }
-    Tree { source, root }
+    if !inserted.is_empty() {
+        offsets::restore(&mut root, &source, &inserted, strip);
+    }
+    Tree { source: text, root }
 }
 
 /// The ranges of the Markdown parts of `segments`, in order.
@@ -308,7 +349,7 @@ impl<'a> Converter<'a> {
             depth: 0,
         };
         for tree in trees {
-            converter.collect(&tree.source, &tree.root);
+            converter.collect(tree.source, &tree.root);
         }
         converter
     }
@@ -359,7 +400,7 @@ impl<'a> Converter<'a> {
                 Segment::Markdown(_) => {
                     let tree = &trees[*next];
                     *next += 1;
-                    self.source = &tree.source;
+                    self.source = tree.source;
                     if let Some(children) = tree.root.children() {
                         self.blocks_into(children, out);
                     }
@@ -437,7 +478,7 @@ impl<'a> Converter<'a> {
         // The tree is read recursively, as it is shown: deeper content is
         // its text, so no input runs the stack out.
         if self.depth >= MAX_DEPTH {
-            let text: String = nodes.iter().map(Node::to_string).collect();
+            let text = plain_text(nodes);
             if !text.trim().is_empty() {
                 out.push(Block::Paragraph {
                     content: vec![Inline::Text { text }],
@@ -539,7 +580,21 @@ impl<'a> Converter<'a> {
                 tex: math.value.clone(),
             }),
             Node::Html(h) => {
-                if self.parser.options.html {
+                if self.parser.options.html && !self.is_tag(&h.value) {
+                    // `<US tech>` alone on its line: the lines it starts are
+                    // Markdown, the tag text.
+                    if self.depth < MAX_DEPTH {
+                        out.extend(
+                            self.parser
+                                .markdown(&format!("\\{}", h.value.trim_start()))
+                                .blocks,
+                        );
+                    } else {
+                        out.push(Block::Paragraph {
+                            content: literal_lines(&h.value),
+                        });
+                    }
+                } else if self.parser.options.html {
                     out.extend(html::blocks(self.parser, &h.value));
                 } else {
                     out.push(Block::Paragraph {
@@ -612,6 +667,7 @@ impl<'a> Converter<'a> {
             language: code.lang.clone(),
             meta: code.meta.clone(),
             code: code.value.clone(),
+            ..CodeBlock::default()
         })
     }
 
@@ -665,7 +721,7 @@ impl<'a> Converter<'a> {
         let Node::Html(open) = &nodes[at] else {
             return None;
         };
-        let name = unclosed_element(&open.value)?;
+        let name = unclosed_element(&open.value).filter(|name| self.is_element(name))?;
         let close = matching_close(nodes, at, name)?;
         let Node::Html(close_node) = &nodes[close] else {
             return None;
@@ -702,7 +758,7 @@ impl<'a> Converter<'a> {
 
     fn inlines(&mut self, nodes: &[Node]) -> Vec<Inline> {
         if self.depth >= MAX_DEPTH {
-            let text: String = nodes.iter().map(Node::to_string).collect();
+            let text = plain_text(nodes);
             return vec![Inline::Text { text }];
         }
         self.depth += 1;
@@ -742,7 +798,7 @@ impl<'a> Converter<'a> {
         if !self.parser.options.html {
             return None;
         }
-        let name = unclosed_element(&open.value)?;
+        let name = unclosed_element(&open.value).filter(|name| self.is_element(name))?;
         let close = matching_close(nodes, at, name)?;
         let start = nodes[at].position()?.start.offset;
         let end = nodes[close].position()?.end.offset;
@@ -786,6 +842,9 @@ impl<'a> Converter<'a> {
             return None;
         }
         *slot = self.inlines(&nodes[open + 1..close]);
+        if let Inline::Link { content, .. } = &mut element {
+            *content = unlink(std::mem::take(content));
+        }
         Some(element)
     }
 
@@ -812,10 +871,10 @@ impl<'a> Converter<'a> {
             Node::Link(link) => out.push(Inline::Link {
                 url: link.url.clone(),
                 title: link.title.clone(),
-                content: self.inlines(&link.children),
+                content: unlink(self.inlines(&link.children)),
             }),
             Node::LinkReference(link) => {
-                let content = self.inlines(&link.children);
+                let content = unlink(self.inlines(&link.children));
                 match self.definitions.get(link.identifier.as_str()) {
                     Some(def) => out.push(Inline::Link {
                         url: def.url.clone(),
@@ -865,7 +924,7 @@ impl<'a> Converter<'a> {
                 });
             }
             Node::Html(h) => {
-                if self.parser.options.html {
+                if self.parser.options.html && self.is_tag(&h.value) {
                     extend(out, html::inlines(self.parser, &h.value));
                 } else {
                     push_text(out, &h.value.replace('\n', " "));
@@ -896,13 +955,36 @@ impl<'a> Converter<'a> {
         }
     }
 
+    /// Whether `name` is an element of HTML or of a `tag` extension: a tag
+    /// of another name (`<US tech>`, `</Foo>`) is text.
+    fn is_element(&self, name: &str) -> bool {
+        html::is_element(name)
+            || self.parser.extensions.iter().any(|ext| {
+                ext.tag
+                    .as_deref()
+                    .is_some_and(|tag| tag.eq_ignore_ascii_case(name))
+            })
+    }
+
+    /// Whether HTML `html` is markup: it starts with a tag of an element
+    /// ([`Self::is_element`]), a comment, a declaration or an instruction.
+    fn is_tag(&self, html: &str) -> bool {
+        let inner = html.trim_start().strip_prefix('<').unwrap_or_default();
+        let name = inner.strip_prefix('/').unwrap_or(inner);
+        let len = name
+            .bytes()
+            .take_while(|b| b.is_ascii_alphanumeric() || *b == b'-')
+            .count();
+        len == 0 || self.is_element(&name[..len])
+    }
+
     /// Node `node` as the text it was written as.
     fn literal(&mut self, node: &Node, out: &mut Vec<Inline>) {
         let text = node
             .position()
             .and_then(|p| self.source.get(p.start.offset..p.end.offset))
             .map(|s| s.replace('\n', " "))
-            .unwrap_or_else(|| node.to_string());
+            .unwrap_or_else(|| plain_text(std::slice::from_ref(node)));
         push_text(out, &text);
     }
 
@@ -1066,6 +1148,58 @@ fn push_text(out: &mut Vec<Inline>, text: &str) {
         last.push_str(text);
     } else {
         out.push(Inline::text(text));
+    }
+}
+
+/// A link's `content` without the links in it, each replaced by its own
+/// content: links do not contain links (GFM), and the parser still reads a
+/// bare URL in a link's text (`[https://a.dev](https://b.dev)`) as one.
+fn unlink(content: Vec<Inline>) -> Vec<Inline> {
+    if !content.iter().any(has_link) {
+        return content;
+    }
+    let mut out = Vec::with_capacity(content.len());
+    for inline in content {
+        match inline {
+            Inline::Link { content, .. } => extend(&mut out, unlink(content)),
+            mut other => {
+                if let Some(content) = formatted_content(&mut other) {
+                    *content = unlink(std::mem::take(content));
+                }
+                push(&mut out, other);
+            }
+        }
+    }
+    out
+}
+
+fn has_link(inline: &Inline) -> bool {
+    match inline {
+        Inline::Link { .. } => true,
+        Inline::Strong { content }
+        | Inline::Emphasis { content }
+        | Inline::Strikethrough { content }
+        | Inline::Underline { content }
+        | Inline::Highlight { content, .. }
+        | Inline::Superscript { content }
+        | Inline::Subscript { content }
+        | Inline::Small { content } => content.iter().any(has_link),
+        _ => false,
+    }
+}
+
+/// The content of a formatting inline (`Strong`, `Emphasis`, ...).
+fn formatted_content(inline: &mut Inline) -> Option<&mut Vec<Inline>> {
+    match inline {
+        Inline::Strong { content }
+        | Inline::Emphasis { content }
+        | Inline::Strikethrough { content }
+        | Inline::Underline { content }
+        | Inline::Highlight { content, .. }
+        | Inline::Superscript { content }
+        | Inline::Subscript { content }
+        | Inline::Small { content } => Some(content),
+        _ => None,
     }
 }
 

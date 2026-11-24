@@ -1,4 +1,4 @@
-import { Text, cleanup, colorScheme, effect, signal, type Signal, type YNode } from "nsh";
+import { Text, cleanup, colorScheme, effect, signal, type Signal, type ViewRef } from "nsh";
 import { Button, View } from "../SettingsFocus";
 import { Icon } from "../Icon";
 import { space, type InterfaceTheme } from "../appearance";
@@ -65,7 +65,7 @@ export function ThemePicker(props: {
   selected: () => string;
   theme: () => InterfaceTheme;
   onChoose: (id: string) => void;
-  onNode: (id: string, node: YNode) => void;
+  onNode: (id: string, node: ViewRef) => void;
   onFocus: (id: string) => void;
   onBlur: (id: string) => void;
 }) {
@@ -82,7 +82,7 @@ export function ThemePicker(props: {
       style={{ flexGrow: 1, flexBasis: "44%", minWidth: size(145), padding: size(9), gap: size(7), alignItems: "stretch", borderWidth: 1,
         borderColor: selected() ? theme().palette.text : theme().palette.divider, borderRadius: size(12), backgroundColor: selected() ? theme().palette.bg : "transparent" }}
       focusStyle={{ outlineStyle: "solid", outlineWidth: 2, outlineOffset: 2, outlineColor: theme().palette.focus }} hoverStyle={{ backgroundColor: theme().palette.panelActive }}>
-      <View accessible={false} pointerEvents="none" style={{ height: size(61), borderRadius: 5, overflow: "hidden", borderWidth: 1, borderColor: colors().divider, backgroundColor: colors().bg }}>
+      <View accessible={false} style={{ height: size(61), borderRadius: 5, overflow: "hidden", borderWidth: 1, borderColor: colors().divider, backgroundColor: colors().bg, pointerEvents: "none" }}>
         <View style={{ height: size(13), backgroundColor: colors().panel, flexDirection: "row", alignItems: "center", gap: size(3), paddingHorizontal: size(6) }}>
           {[0, 1, 2].map(() => <View style={{ width: size(3), height: size(3), borderRadius: size(2), backgroundColor: colors().muted }} />)}
         </View>
@@ -99,10 +99,10 @@ export function ThemePicker(props: {
         </View>
       </View>
       <View style={{ flexDirection: "row", alignItems: "center", gap: size(5) }}>
-        <Text numberOfLines={2} style={{ ...textStyle(theme, 11), flex: 1, fontWeight: selected() ? "600" : "400" }}>{entry().label}</Text>
+        <Text style={{ ...textStyle(theme, 11), flex: 1, fontWeight: selected() ? "600" : "400", numberOfLines: 2 }}>{entry().label}</Text>
         {selected() && <Icon name="check" size={12 * theme().scale} color={theme().palette.text} />}
       </View>
-      <Text numberOfLines={2} style={textStyle(theme, 10, true)}>{entry().description}</Text>
+      <Text style={{ ...textStyle(theme, 10, true), numberOfLines: 2 }}>{entry().description}</Text>
       {!!entry().error && <Text style={{ ...textStyle(theme, 10, true), color: theme().palette.gold }}>{entry().error}</Text>}
     </Button>;
   }

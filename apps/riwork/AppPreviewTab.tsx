@@ -115,15 +115,15 @@ export function AppPreviewTab(props: { spec: PreviewSpec; visible: boolean; them
       </View>
       {!iosMode() ? <View style={{ flexDirection: "row", flexWrap: "wrap", gap: space(6, theme().scale) }}>
         <Input testID="preview-command" accessibilityLabel="Command" value={spec().command} placeholder="Command that starts your development app" readonly={busy() || active()}
-          onChange={(command) => update({ command })} onBlur={commit} onSubmit={commit} style={{ ...fieldStyle(), flex: 1, minWidth: space(160, theme().scale), fontFamily: theme().monoFamily }} />
-        <Input testID="preview-cwd" accessibilityLabel="Working folder" value={spec().cwd} placeholder="Working folder" readonly={busy() || active()} onChange={(cwd) => update({ cwd })} onBlur={commit} onSubmit={commit} style={{ ...fieldStyle(), flex: 1, minWidth: space(160, theme().scale), fontFamily: theme().monoFamily }} />
+          onChange={({ value: command }) => update({ command })} onBlur={commit} onSubmit={commit} style={{ ...fieldStyle(), flex: 1, minWidth: space(160, theme().scale), fontFamily: theme().monoFamily }} />
+        <Input testID="preview-cwd" accessibilityLabel="Working folder" value={spec().cwd} placeholder="Working folder" readonly={busy() || active()} onChange={({ value: cwd }) => update({ cwd })} onBlur={commit} onSubmit={commit} style={{ ...fieldStyle(), flex: 1, minWidth: space(160, theme().scale), fontFamily: theme().monoFamily }} />
       </View> : <>
-        <Input testID="preview-cwd" accessibilityLabel="Working folder" value={spec().cwd} placeholder="Working folder" readonly={busy() || active()} onChange={(cwd) => update({ cwd })} onBlur={commit} onSubmit={commit} style={{ ...fieldStyle(), fontFamily: theme().monoFamily }} />
+        <Input testID="preview-cwd" accessibilityLabel="Working folder" value={spec().cwd} placeholder="Working folder" readonly={busy() || active()} onChange={({ value: cwd }) => update({ cwd })} onBlur={commit} onSubmit={commit} style={{ ...fieldStyle(), fontFamily: theme().monoFamily }} />
         {([[ ["scheme", "Scheme"], ["project", "Project / workspace"] ], [ ["device_type", "Device"], ["runtime", "iOS version"] ]] as const).map((pair) => <View style={{ flexDirection: "row", flexWrap: "wrap", gap: space(6, theme().scale) }}>
           {pair.map(([field, label]) => <View style={{ flex: 1, minWidth: space(170, theme().scale), gap: 3 }}>
             <Text style={{ ...style(), color: theme().palette.muted }}>{label}</Text>
             <Input testID={`preview-ios:${field}`} accessibilityLabel={label} value={spec().ios?.[field] ?? ""} placeholder={field === "scheme" ? "App scheme" : `${label} (optional)`} readonly={busy() || active()}
-              onChange={(value) => ios({ [field]: field === "scheme" ? value : value || null } as Partial<NonNullable<PreviewSpec["ios"]>>)} onBlur={commit} onSubmit={commit} style={fieldStyle()} />
+              onChange={({ value }) => ios({ [field]: field === "scheme" ? value : value || null } as Partial<NonNullable<PreviewSpec["ios"]>>)} onBlur={commit} onSubmit={commit} style={fieldStyle()} />
           </View>)}
         </View>)}
       </>}
@@ -139,6 +139,6 @@ export function AppPreviewTab(props: { spec: PreviewSpec; visible: boolean; them
       {button("preview-logs-toggle", `${logsOpen() ? "▾" : "▸"} Logs (${state().logs.length})`, () => logsOpen.set(!logsOpen()))}
       <Text style={{ ...style(), flex: 1, minWidth: space(180, theme().scale), fontSize: 10 * theme().scale, color: theme().palette.muted }}>{spec().mode === "ios_simulator" ? "Tap and drag on the device to interact. The simulator belongs to this preview." : spec().mode === "cooperative" ? "Click the preview to type. Capture pauses while the tab or window is inactive." : "Input targets only the app launched here. Somtus Cua setup supplies capture and input permissions."}</Text>
     </View>
-    {logsOpen() && <Scroll testID="preview-logs" style={{ height: space(160, theme().scale), maxHeight: space(180, theme().scale), minHeight: 0 }} contentStyle={{ padding: 8, gap: 2 }}>{state().logs.slice(-500).map((log) => <Text selectable={true} style={{ ...style(), fontSize: 10 * theme().scale, fontFamily: theme().monoFamily, color: log.stderr ? theme().palette.gold : theme().palette.muted }}>{log.text}</Text>)}</Scroll>}
+    {logsOpen() && <Scroll testID="preview-logs" style={{ height: space(160, theme().scale), maxHeight: space(180, theme().scale), minHeight: 0 }} contentStyle={{ padding: 8, gap: 2 }}>{state().logs.slice(-500).map((log) => <Text style={{ ...style(), fontSize: 10 * theme().scale, fontFamily: theme().monoFamily, color: log.stderr ? theme().palette.gold : theme().palette.muted, userSelect: "text" }}>{log.text}</Text>)}</Scroll>}
   </View>;
 }

@@ -1,4 +1,4 @@
-import { Text, View, cleanup, computed, signal, type YNode } from "nsh";
+import { Text, View, cleanup, computed, signal, type ViewRef } from "nsh";
 import { Button, Input } from "nsh/base";
 import type { MenuItem } from "nsh/desktop";
 import { Chat, Handoff, type ChatPanel } from "riwork/native";
@@ -163,7 +163,7 @@ export function createContinue(options: {
 export type ContinueControl = ReturnType<typeof createContinue>;
 
 /** The inline confirmation by the composer: which agent, what it reads, a note, Hand off. */
-export function ContinueConfirm(props: { control: ContinueControl; theme: () => InterfaceTheme; panel: () => ChatPanel; onFocus?: (node: YNode) => void;
+export function ContinueConfirm(props: { control: ContinueControl; theme: () => InterfaceTheme; panel: () => ChatPanel; onFocus?: (node: ViewRef) => void;
   /** Leaves the confirmation, as ⎋ does: the focus goes back to the message box. */
   onCancel: () => void }) {
   const control = props.control;
@@ -183,7 +183,7 @@ export function ContinueConfirm(props: { control: ContinueControl; theme: () => 
     style={{ borderWidth: 1, borderColor: palette().divider, borderRadius: 8, backgroundColor: palette().panelActive, gap: size(8), padding: size(10), marginBottom: size(6) }}>
     <View style={{ flexDirection: "row", alignItems: "center", gap: size(6) }}>
       <Icon name="worktrees" size={13 * props.theme().scale} color={palette().muted} />
-      <Text role="header" numberOfLines={1} style={{ ...text(false, 12), fontWeight: "600", flexShrink: 1 }}>{`Continue with ${control.choice()?.label ?? ""}`}</Text>
+      <Text role="header" style={{ ...text(false, 12), fontWeight: "600", flexShrink: 1, numberOfLines: 1 }}>{`Continue with ${control.choice()?.label ?? ""}`}</Text>
     </View>
     <Text testID="chat-continue-what" style={busy() ? { ...text(), color: palette().gold } : text(true)}>{busy()
       ? "The agent is still at work. Wait for the turn to end, or stop it, to hand off: a new chat then takes this tab with the conversation so far."
@@ -197,10 +197,10 @@ export function ContinueConfirm(props: { control: ContinueControl; theme: () => 
       {control.context() === "summary" && control.askable() && <Text style={text(true)}>This agent writes it first.</Text>}
     </View>
     <Input testID="chat-continue-note" ref={(node) => { node.focus(); props.onFocus?.(node); }} accessibilityLabel="Note for the new agent" placeholder="Note for the new agent (optional)"
-      value={control.note()} onChange={(value) => control.note.set(value)} onSubmit={() => void control.handOff()} disabled={control.pending()}
+      value={control.note()} onChange={({ value }) => control.note.set(value)} onSubmit={() => void control.handOff()} disabled={control.pending()}
       style={{ ...text(), minHeight: size(28), paddingHorizontal: size(8), paddingVertical: size(5), borderRadius: 6, borderWidth: 1, borderColor: palette().divider, backgroundColor: palette().bg }} />
     {control.pending() && <Text role="text" style={{ ...text(), color: palette().gold }}>{control.context() === "summary" && control.askable() ? "Asking for a summary and starting the new chat…" : "Reading the conversation and starting the new chat…"}</Text>}
-    {!!control.error() && <Text testID="chat-continue-error" role="alert" selectable={true} style={{ ...text(), color: palette().danger }}>{control.error()}</Text>}
+    {!!control.error() && <Text testID="chat-continue-error" role="alert" style={{ ...text(), color: palette().danger, userSelect: "text" }}>{control.error()}</Text>}
     <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: size(6) }}>
       <Button testID="chat-continue-cancel" disabled={control.pending()} onPress={props.onCancel} style={button()} focusStyle={{ backgroundColor: palette().panel }}><Text style={text()}>Cancel</Text></Button>
       <Button testID="chat-continue-start" disabled={control.pending() || busy()} onPress={() => void control.handOff()} style={{ ...button(), backgroundColor: palette().panel }} focusStyle={{ backgroundColor: palette().bg }}>

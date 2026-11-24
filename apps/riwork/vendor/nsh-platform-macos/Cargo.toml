@@ -11,8 +11,9 @@
 
 [package]
 edition = "2024"
+rust-version = "1.97"
 name = "nsh-platform-macos"
-version = "0.3.0"
+version = "0.6.0"
 build = false
 autolib = false
 autobins = false
@@ -26,20 +27,91 @@ license = "Apache-2.0"
 repository = "https://github.com/longbridge/nsh"
 
 [features]
-default = ["js"]
+crypto = [
+    "js",
+    "nsh-engine/crypto",
+]
+default = [
+    "js",
+    "shader",
+    "editor",
+    "emoji-picker",
+    "highlight",
+    "math",
+    "plot",
+    "rich-editor",
+    "term",
+    "zlib",
+    "crypto",
+    "websocket",
+    "updater",
+    "svg",
+]
 dev = [
     "js",
+    "shader",
+    "editor",
+    "emoji-picker",
+    "highlight",
+    "math",
+    "plot",
+    "rich-editor",
+    "term",
+    "zlib",
+    "crypto",
+    "websocket",
+    "updater",
     "dep:nsh-dev",
     "dep:nsh-testing",
+    "svg",
 ]
-js = ["nsh-engine/js"]
+editor = ["nsh-base/editor"]
+emoji-picker = ["nsh-base/emoji-picker"]
+highlight = ["nsh-base/highlight"]
+js = ["nsh-engine/js-core"]
+math = ["nsh-base/math"]
+plot = ["nsh-base/plot"]
+rich-editor = ["nsh-base/rich-editor"]
+shader = ["nsh-engine/shader"]
+svg = ["nsh-core/svg"]
+term = ["nsh-base/term"]
+updater = ["nsh-core/updater"]
+websocket = ["nsh-core/websocket"]
+zlib = [
+    "js",
+    "nsh-engine/zlib",
+]
 
 [lib]
 name = "nsh_platform_macos"
 path = "src/lib.rs"
 
+[[test]]
+name = "accessibility"
+path = "tests/accessibility.rs"
+harness = false
+
+[[test]]
+name = "background"
+path = "tests/background.rs"
+harness = false
+
+[[test]]
+name = "draw_on_show"
+path = "tests/draw_on_show.rs"
+harness = false
+
+[[test]]
+name = "native"
+path = "tests/native/main.rs"
+harness = false
+
 [dependencies.log]
 version = "0.4"
+
+[dev-dependencies.nsh-dev]
+version = "0.6.0"
+features = ["server"]
 
 [target.'cfg(target_os = "macos")'.dependencies.block2]
 version = "0.6.2"
@@ -54,25 +126,26 @@ version = "0.3.1"
 version = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies.nsh-base]
-version = "0.3.0"
-features = ["highlight"]
+version = "0.6.0"
 default-features = false
 
 [target.'cfg(target_os = "macos")'.dependencies.nsh-core]
-version = "0.3.0"
-features = ["svg"]
+version = "0.6.0"
 
 [target.'cfg(target_os = "macos")'.dependencies.nsh-dev]
-version = "0.3.0"
+version = "0.6.0"
 features = ["client"]
 optional = true
 
 [target.'cfg(target_os = "macos")'.dependencies.nsh-engine]
-version = "0.3.0"
+version = "0.6.0"
 default-features = false
 
+[target.'cfg(target_os = "macos")'.dependencies.nsh-platform-apple]
+version = "0.6.0"
+
 [target.'cfg(target_os = "macos")'.dependencies.nsh-testing]
-version = "0.3.0"
+version = "0.6.0"
 features = ["agent"]
 optional = true
 default-features = false
@@ -127,7 +200,11 @@ features = [
     "NSScreen",
     "NSScrollView",
     "NSSecureTextField",
+    "NSStatusBar",
+    "NSStatusBarButton",
+    "NSStatusItem",
     "NSText",
+    "NSLayoutManager",
     "NSTextContainer",
     "NSTextField",
     "NSActionCell",
@@ -144,6 +221,9 @@ features = [
     "NSVisualEffectView",
     "NSWindow",
     "NSWorkspace",
+    "NSDockTile",
+    "NSPanel",
+    "NSSpellChecker",
 ]
 default-features = false
 
@@ -170,6 +250,8 @@ features = [
     "CGColor",
     "CGColorSpace",
     "CGContext",
+    "CGDirectDisplay",
+    "CGDisplayConfiguration",
     "CGEvent",
     "CGEventTypes",
     "CGGradient",
@@ -209,12 +291,15 @@ features = [
     "NSAttributedString",
     "NSBundle",
     "NSCache",
+    "NSCalendar",
     "NSData",
     "NSDictionary",
     "NSDate",
+    "NSDateFormatter",
     "NSDistributedNotificationCenter",
     "NSEnumerator",
     "NSError",
+    "NSFormatter",
     "NSGeometry",
     "NSKeyValueObserving",
     "NSLocale",
@@ -222,17 +307,21 @@ features = [
     "NSObject",
     "NSOperation",
     "NSProcessInfo",
+    "NSPropertyList",
     "NSRange",
     "NSRunLoop",
     "NSSet",
     "NSStream",
     "NSString",
     "NSThread",
+    "NSTimeZone",
     "NSTimer",
     "NSURL",
+    "NSURLError",
     "NSURLRequest",
     "NSURLResponse",
     "NSURLSession",
+    "NSUserActivity",
     "NSUserDefaults",
     "NSValue",
 ]
@@ -254,6 +343,19 @@ version = "0.3.2"
 features = [
     "std",
     "libc",
+]
+default-features = false
+
+[target.'cfg(target_os = "macos")'.dependencies.objc2-io-surface]
+version = "0.3.2"
+features = [
+    "std",
+    "libc",
+    "objc2",
+    "objc2-core-foundation",
+    "IOSurfaceRef",
+    "IOSurfaceTypes",
+    "IOSurfaceBase",
 ]
 default-features = false
 

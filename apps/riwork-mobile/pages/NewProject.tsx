@@ -74,7 +74,7 @@ export function NewProjectForm(props: {
       else message.set({ text: failure.message, error: true });
     }
   }
-  return <Dialog open={props.open} presentation="formSheet" onOpenChange={(open) => { if (!open) close(); }} closeOnSwipe={!busy()} closeOnEscape={!busy()}
+  return <Dialog open={props.open} presentation="formSheet" onOpenChange={({ open }) => { if (!open) close(); }} closeOnSwipe={!busy()} closeOnEscape={!busy()}
     style={{ backgroundColor: palette().bg, padding: pt(20), gap: pt(16) }}>
     <View style={{ flexDirection: "row", alignItems: "center", gap: pt(8) }}>
       <Action label="Cancel" compact={true} disabled={busy()} action={close} />
@@ -83,7 +83,7 @@ export function NewProjectForm(props: {
         disabled={busy() || !connected() || !!projectNameProblem(trimmed())} action={() => void create()} />
     </View>
     <Input testID="new-project-name" accessibilityLabel="Project name" placeholder="Name" value={name()} autoFocus={true}
-      onChange={(value) => { name.set(value); message.set(null); }} onSubmit={() => void create()} returnKeyType="done"
+      onChange={({ value }) => { name.set(value); message.set(null); }} onSubmit={() => void create()} returnKeyType="done"
       autoCapitalize="words" autoCorrect={false} readonly={busy()}
       style={{ ...text(16), minHeight: target(), paddingHorizontal: pt(14), paddingVertical: pt(10), backgroundColor: palette().panel, borderRadius: pt(11) }} />
     {problem() && <Text style={text(13, "error")}>{problem()!}</Text>}

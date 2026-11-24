@@ -60,8 +60,8 @@ export function ChatImage(props: {
   return <View testID={`chat-image-card:${props.id}`} style={{ maxWidth: "100%", gap: 5, paddingVertical: 4 }}>
     {preview()?.dataUrl && !error() && <View role="button" accessibilityLabel={`Expand ${props.label || "image"}`}
       onPress={() => props.expand(preview()!)}>
-      <Image testID={`chat-image:${props.id}`} src={preview()!.dataUrl!} resizeMode="contain"
-        accessibilityLabel={props.label || "Image"} style={{ width: width(), height: height() }}
+      <Image testID={`chat-image:${props.id}`} src={preview()!.dataUrl!}
+        accessibilityLabel={props.label || "Image"} style={{ width: width(), height: height(), objectFit: "contain" }}
         onError={(event) => { props.cache?.delete(props.id); error.set(event.message || "This image could not be displayed"); }} />
     </View>}
     {loading() && <Text style={text()}>Loading image…</Text>}

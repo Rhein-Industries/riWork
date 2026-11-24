@@ -10,7 +10,9 @@ test("P5-USAGE-13: the panel ages a passed reset without a new usage snapshot or
     await app.host.send("app.fixture.usage.report", { mode: "reset" });
     expect(app.shows(`${CARD} >> text:5h · 20% left`)).toBe(true);
     expect(app.shows(`${CARD} >> text:Quota reset passed; waiting for an updated report`)).toBe(false);
-    await app.clock.runFor(61_000);
+    const clock = app.clock;
+    if (!clock) throw new Error("this test needs the manual clock its open() options ask for");
+    await clock.runFor(61_000);
     expect(app.shows(`${CARD} >> text:Quota reset passed; waiting for an updated report`)).toBe(true);
     expect(app.shows(`${CARD} >> text:Awaiting reset update`)).toBe(true);
     expect(app.shows(`${CARD} >> text:5h · 20% left`)).toBe(true);

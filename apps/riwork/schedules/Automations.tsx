@@ -1,8 +1,9 @@
-import { Scroll, Text, View, cleanup, computed, effect, keymap, signal, type YNode } from "nsh";
-import { Button, Input, Radio, RadioGroup } from "nsh/base";
+import { Scroll, Text, View, cleanup, computed, effect, keymap, signal, type ViewRef } from "nsh";
+import { Button, Input, Radio } from "nsh/base";
 import { Schedules } from "riwork/native";
 import { DEFAULT_THEME, space, type InterfaceTheme } from "../appearance";
 import { Icon } from "../Icon";
+import { focusView } from "../keyboard";
 import { Segmented, StatusPill, buttonLook, cardStyle, focusRing, type ButtonKind, type Tone } from "../PanelKit";
 import { PANEL } from "../panel_layout";
 import {
@@ -46,7 +47,7 @@ export function AutomationsPanel(props: {
   const remote = () => props.projectId().startsWith("remote:");
   const palette = () => theme().palette;
   const text = (size = 11, color = palette().text) => ({ fontFamily: theme().family, fontSize: size * theme().scale, color });
-  let panel: YNode | undefined, title: YNode | undefined, subscription: { close(): void } | undefined;
+  let panel: ViewRef | undefined, title: ViewRef | undefined, subscription: { close(): void } | undefined;
   let optionsGeneration = 0, alive = true, focusTitle = false;
   effect(() => { optionsGeneration++; model.bind(props.projectId()); });
   effect(() => {
@@ -83,14 +84,14 @@ export function AutomationsPanel(props: {
     if (!row) void accountPreview("codex");
     title?.focus();
   }
-  function cancel() { model.cancel(); panel?.focus(); }
+  function cancel() { model.cancel(); focusView(panel); }
   // Escape steps back one level: a delete confirmation first, then the editor and its draft.
   function escape() { if (model.confirmDelete !== null) model.cancelDelete(); else cancel(); }
   async function save() {
     await model.save();
     // Validation and async rejection retain the invoking control's focus,
     // matching SchedulePanel::save. Kept inputs already own their native refs.
-    if (alive && visible() && !model.editor) panel?.focus();
+    if (alive && visible() && !model.editor) focusView(panel);
   }
   function options(patch: Partial<ChatOptions>) { if (model.editor) model.patch({ options: { ...model.editor.options, ...patch } }); }
   function changeProvider(provider: string) {
@@ -117,7 +118,7 @@ export function AutomationsPanel(props: {
     return <Button testID={id} accessibilityLabel={label} disabled={disabled} selected={selected} onPress={onPress}
       style={{ ...look.style, ...(chosen ? { backgroundColor: palette().panelActive, borderColor: palette().text } : {}) }}
       hoverStyle={chosen ? {} : look.hoverStyle} focusStyle={look.focusStyle} disabledStyle={look.disabledStyle}>
-      <Text numberOfLines={1} style={{ ...look.label, ...(chosen ? { fontWeight: "600" as const } : {}) }}>{label}</Text>
+      <Text style={{ ...look.label, ...(chosen ? { fontWeight: "600" as const } : {}), numberOfLines: 1 }}>{label}</Text>
     </Button>;
   }
   /** A set of choices as one segmented control. */
@@ -129,10 +130,12 @@ export function AutomationsPanel(props: {
       <Text style={text(10, palette().muted)}>{label}</Text>
       <Input testID={`automation-${id}`} accessibilityLabel={label} placeholder={placeholder} readonly={pending()} value={value()}
         ref={(node) => { if (isTitle) { title = node; if (focusTitle) { focusTitle = false; node.focus(); } } }} onFocus={() => focused.set(true)} onCompositionChange={(event) => composing.set(event.composing)}
-        onChange={(value) => { if (!pending()) update(value); }} style={{ ...text(), minHeight: space(28, theme().scale), backgroundColor: palette().panel, borderRadius: space(8, theme().scale), borderWidth: 1, borderColor: palette().divider, paddingHorizontal: space(8, theme().scale), paddingVertical: space(5, theme().scale) }}
+        onChange={({ value }) => { if (!pending()) update(value); }} style={{ ...text(), minHeight: space(28, theme().scale), backgroundColor: palette().panel, borderRadius: space(8, theme().scale), borderWidth: 1, borderColor: palette().divider, paddingHorizontal: space(8, theme().scale), paddingVertical: space(5, theme().scale) }}
         focusStyle={{ borderColor: palette().focus }} />
     </View>;
   }
+  // Each set sits in a plain `role="radiogroup"` view, which is all NSH 0.3's RadioGroup was. The
+  // 0.4+ RadioGroup makes a set one Tab stop whose arrow keys check the radio they reach.
   function choose(id: string, label: string, selected: boolean, onChange: () => void) {
     return <Radio testID={id} accessibilityLabel={label} checked={selected} disabled={pending()} onChange={onChange}>
       <Text style={text(10)}>{`${selected ? "●" : "○"} ${label}`}</Text>
@@ -159,9 +162,9 @@ export function AutomationsPanel(props: {
           {field("effort", "Effort · Optional", () => e().options.effort ?? "", (effort) => options({ effort }), "Default")}
         </View>
         <Text style={text(10, palette().muted)}>Permission mode</Text>
-        <RadioGroup style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+        <View role="radiogroup" style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
           {PERMISSIONS.map(([value, label]) => choose(`automation-permission-${value}`, label, e().options.permission === value, () => options({ permission: value })))}
-        </RadioGroup>
+        </View>
         <View style={{ flexDirection: "row" }}>
           {button("automation-fast", `Fast mode: ${e().options.fast ? "On" : "Off"}`, () => options({ fast: !e().options.fast }), e().options.fast)}
         </View>
@@ -191,9 +194,9 @@ export function AutomationsPanel(props: {
       {exact() && field("at", "Exact date / time · ISO with UTC offset", () => e().at, (at) => patch({ at, quick: null }), "e.g. 2030-01-31T09:00:00+01:00")}
       <Text testID="automation-local-time" style={text(10, palette().muted)}>{`Local · ${e().at.replace("T", " ")}`}</Text>
       <Text style={text(10, palette().muted)}>Repeat</Text>
-      <RadioGroup style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+      <View role="radiogroup" style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
         {([["once", "Once"], ["hourly", "Hourly"], ["daily", "24 hours"], ["weekly", "7 days"], ["minutes", "Minutes…"]] as const).map(([value, label]) => choose(`automation-repeat-${value}`, label, e().repeat === value, () => patch({ repeat: value })))}
-      </RadioGroup>
+      </View>
       {customRepeat() && field("minutes", "Every N minutes · Minimum 5", () => e().minutes, (minutes) => patch({ minutes }), "e.g. 90")}
       <Text style={text(10, palette().muted)}>Repeats use elapsed time from the first run (fixed UTC cadence, including DST).</Text>
       {!!state().error && <Text testID="automation-error" role="alert" style={text(11, palette().danger)}>{state().error}</Text>}
@@ -217,15 +220,15 @@ export function AutomationsPanel(props: {
     const line = (size = 10, color = palette().muted) => ({ ...text(size, color), minWidth: 0 });
     return <View testID={`automation-row-${row.key.id}`} style={{ ...cardStyle(theme, 14), gap: space(6, theme().scale) }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-        <Text numberOfLines={1} style={{ ...text(12), flex: 1, minWidth: 0, fontWeight: "600" }}>{`${scope} / ${row.title}`}</Text>
+        <Text style={{ ...text(12), flex: 1, minWidth: 0, fontWeight: "600", numberOfLines: 1 }}>{`${scope} / ${row.title}`}</Text>
         <StatusPill theme={theme} id={`automation-status-${row.key.id}`} tone={tone} label={`${status(row)}${row.reviewRequired ? " · Review required" : ""}`} inline={true} />
       </View>
-      <Text selectable={true} numberOfLines={2} style={text(11)}>{row.prompt}</Text>
-      <Text numberOfLines={1} style={line(10, palette().text)}>{`Next · ${row.nextDisplay ?? "—"} · ${row.everyMinutes == null ? "Once" : `Every ${row.everyMinutes} min`}`}</Text>
+      <Text style={{ ...text(11), userSelect: "text", numberOfLines: 2 }}>{row.prompt}</Text>
+      <Text style={{ ...line(10, palette().text), numberOfLines: 1 }}>{`Next · ${row.nextDisplay ?? "—"} · ${row.everyMinutes == null ? "Once" : `Every ${row.everyMinutes} min`}`}</Text>
       <View tooltip={<View style={{ maxWidth: space(320, theme().scale), padding: 7, gap: 3, borderRadius: 6, backgroundColor: palette().panelActive }}>{facts.map((fact) => <Text style={text(10)}>{fact}</Text>)}</View>}>
-        <Text testID={`automation-facts-${row.key.id}`} numberOfLines={1} style={line()}>{facts.join(" · ")}</Text>
+        <Text testID={`automation-facts-${row.key.id}`} style={{ ...line(), numberOfLines: 1 }}>{facts.join(" · ")}</Text>
       </View>
-      {troubled && !!row.lastRun?.message && <Text numberOfLines={2} style={line(10, outcome === "failed" ? palette().danger : palette().gold)}>{row.lastRun.message}</Text>}
+      {troubled && !!row.lastRun?.message && <Text style={{ ...line(10, outcome === "failed" ? palette().danger : palette().gold), numberOfLines: 2 }}>{row.lastRun.message}</Text>}
       <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space(6, theme().scale), paddingTop: space(4, theme().scale) }}>
         {button(`automation-edit-${row.key.id}`, "Edit", () => open(row))}
         {button(`automation-pause-${row.key.id}`, row.paused ? "Resume" : "Pause", () => void model.pause(row))}
@@ -248,7 +251,7 @@ export function AutomationsPanel(props: {
   const chats = () => (state().data?.chats ?? []).filter((chat) => chat.projectId === props.projectId());
   const schedulerError = () => state().data?.error || state().data?.runtimeError;
   const section = () => ({ ...text(10, palette().muted), fontWeight: "600" as const, paddingHorizontal: space(6, theme().scale), paddingTop: 4 });
-  return <View ref={(node) => { panel = node; }} testID="automations-panel" focusable={true} onFocus={() => focused.set(true)} onBlur={() => focused.set(false)} onPress={props.onPress}
+  return <View ref={(node) => { panel = node; }} testID="automations-panel" onFocus={() => focused.set(true)} onBlur={() => focused.set(false)} onPress={props.onPress}
     style={{ flex: 1, minHeight: 0, backgroundColor: palette().panel }}>
     {remote() ? <Text style={{ ...text(), padding: 16 }}>Automations works with this Mac's own projects. Select one of them to use it.</Text> : <>
       <View style={{ minHeight: space(PANEL.header, theme().scale), flexDirection: "row", alignItems: "center", paddingHorizontal: space(PANEL.inset, theme().scale), gap: 8 }}>

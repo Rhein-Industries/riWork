@@ -7,7 +7,7 @@
  * (`riwork.chat`, `chat_view.ts`). The app chords work from the page's keymap, from the terminal's (or the
  * chat's) `command` events while it holds the keyboard, and from Swift's `keyboard.command` (its root key
  * host's Clicks prefix, a chord typed in the native chat). */
-import { Scroll, Text, View, cleanup, computed, effect, keymap, signal, untracked, type YNode } from "nsh";
+import { Scroll, Text, View, cleanup, computed, effect, keymap, signal, untracked, type NativeComponentRef, type ScrollRef, type ViewRef } from "nsh";
 import { AlertDialog, Dialog, type AlertDialogAction } from "nsh/base";
 import { APP_CHORDS, appChord, type AppChord } from "../../riwork/app_chords";
 import { Icon } from "../../riwork/Icon";
@@ -64,7 +64,7 @@ export function ProjectPage(props: {
   let chosen = false;
   /** A terminal just made here stays on screen until the Mac's list has it (or for a while, if it never does). */
   let fresh: { key: string; until: number } | null = null;
-  let terminal: YNode | undefined, chat: YNode | undefined, alive = true;
+  let terminal: NativeComponentRef | undefined, chat: NativeComponentRef | undefined, alive = true;
   cleanup(() => { alive = false; });
 
   const tabs = computed(() => workspaceTabs(reply(), shells(), chats()));
@@ -233,7 +233,7 @@ export function ProjectPage(props: {
       : plan.exit ? "Detach keeps the shell running on your Mac. Exit closes it and ends its process."
       : "Detach keeps it running on your Mac. Stop it on the Mac.";
     menuOpen.set(true);
-    const choice = await AlertDialog.show({ title: `Close ${title(tab)}?`, description, actions }).catch(() => null);
+    const choice = (await AlertDialog.show({ title: `Close ${title(tab)}?`, description, actions }).catch(() => null))?.action;
     menuOpen.set(false);
     if (!alive || choice === "cancel" || choice == null) return;
     if (choice === "detach" && tab.entry) await update({ action: "hide", key: tab.key });
@@ -261,7 +261,7 @@ export function ProjectPage(props: {
     if (plan.detach || plan.exit) actions.push({ id: "close", label: tab.worker ? "Close (detach)" : "Close tab…", role: "destructive" });
     actions.push({ id: "cancel", label: "Cancel", role: "cancel" });
     menuOpen.set(true);
-    const choice = await AlertDialog.show({ title: title(tab), presentation: "actionSheet", actions }).catch(() => null);
+    const choice = (await AlertDialog.show({ title: title(tab), presentation: "actionSheet", actions }).catch(() => null))?.action;
     menuOpen.set(false);
     if (!alive) return;
     if (choice === "open") activate(tab);
@@ -283,7 +283,7 @@ export function ProjectPage(props: {
     actions.push({ id: "global", label: "Global orchestrator" }, { id: "display", label: "Display settings" }, { id: "refresh", label: "Refresh tabs" });
     actions.push({ id: "cancel", label: "Cancel", role: "cancel" });
     menuOpen.set(true);
-    const choice = await AlertDialog.show({ title: props.route.name, presentation: "actionSheet", actions }).catch(() => null);
+    const choice = (await AlertDialog.show({ title: props.route.name, presentation: "actionSheet", actions }).catch(() => null))?.action;
     menuOpen.set(false);
     if (!alive) return;
     switch (choice) {
@@ -321,7 +321,7 @@ export function ProjectPage(props: {
         borderBottomWidth: 2, borderColor: isSelected() ? palette().cyan : waiting() ? palette().gold : "transparent",
         backgroundColor: isSelected() ? palette().panel : "transparent" }}>
       <Symbol name={symbol} color={cell.tab.orchestrator ? palette().magenta : cell.tab.kind === "chat" ? palette().cyan : palette().text} size={pt(14)} />
-      <Text numberOfLines={1} style={{ ...text(13, isSelected() ? "text" : "muted"), fontWeight: isSelected() ? "600" : "400", flexShrink: 1 }}>{title(cell.tab)}</Text>
+      <Text style={{ ...text(13, isSelected() ? "text" : "muted"), fontWeight: isSelected() ? "600" : "400", flexShrink: 1, numberOfLines: 1 }}>{title(cell.tab)}</Text>
       <StatusDot status={cell.tab.status} />
     </View>;
   }
@@ -373,7 +373,7 @@ export function ProjectPage(props: {
       style={{ height: ui.bar() - 1, maxWidth: pt(280), flexShrink: 0, flexDirection: "row", alignItems: "center", gap: pt(6), paddingLeft: pt(10),
         paddingRight: isSelected() ? 0 : pt(12), borderRightWidth: 1, borderColor: palette().divider, backgroundColor: isSelected() ? palette().bg : palette().panel }}>
       <TabDot ui={ui} status={cell.tab.status} />
-      <Text numberOfLines={1} style={{ ...text(13, isSelected() ? "text" : "muted"), fontWeight: isSelected() ? "500" : "400", flexShrink: 1 }}>{title(cell.tab)}</Text>
+      <Text style={{ ...text(13, isSelected() ? "text" : "muted"), fontWeight: isSelected() ? "500" : "400", flexShrink: 1, numberOfLines: 1 }}>{title(cell.tab)}</Text>
       {isSelected() && <View testID={`tab-close:${cell.tab.key}`} role="button" accessibilityLabel={`Close ${title(cell.tab)}`} disabled={app.blocked()}
         onPress={() => void requestClose(cell.tab)} activeStyle={{ backgroundColor: palette().panelActive }}
         style={{ width: pt(28), height: "100%", alignItems: "center", justifyContent: "center" }}>
@@ -388,8 +388,8 @@ export function ProjectPage(props: {
   /** The chat on screen (the iPad), likewise. */
   const chatId = computed(() => { const key = selected(); return pad && key?.startsWith("chat:") ? key.slice("chat:".length) : null; });
   // The iPad's strip scrolls the tab chosen into view, as the Mac's does (`revealOffset`).
-  const tabRefs = new Map<string, YNode>();
-  let stripScroll: YNode | undefined, stripX = 0;
+  const tabRefs = new Map<string, ViewRef>();
+  let stripScroll: ScrollRef | undefined, stripX = 0;
   async function reveal(key: string) {
     const node = tabRefs.get(key);
     if (!node || !stripScroll) return;
@@ -486,7 +486,7 @@ export function ProjectPage(props: {
           choose(fresh.key);
           void read();
         }} />
-      <Dialog open={picking()} presentation="pageSheet" onOpenChange={(open) => { if (!open) picking.set(false); }} style={{ backgroundColor: palette().bg }}>
+      <Dialog open={picking()} presentation="pageSheet" onOpenChange={({ open }) => { if (!open) picking.set(false); }} style={{ backgroundColor: palette().bg }}>
         <View style={{ flexDirection: "row", alignItems: "center", padding: pt(12) }}>
           <Text role="header" style={{ ...text(17), fontWeight: "600", flex: 1, paddingHorizontal: pt(8) }}>Open a worker or shell</Text>
           <Action label="Done" compact={true} action={() => picking.set(false)} />
@@ -500,7 +500,7 @@ export function ProjectPage(props: {
                 {pad ? <Icon name={entry.kind === "chat" ? "chat" : "terminal"} color={palette().cyan} size={pt(16)} />
                   : <Symbol name={entry.kind === "chat" ? "bubble.left.and.text.bubble.right" : "terminal"} color={palette().cyan} size={pt(16)} />}
                 <View style={{ flex: 1, gap: pt(2) }}>
-                  <Text numberOfLines={1} style={text(15)}>{entry.title}</Text>
+                  <Text style={{ ...text(15), numberOfLines: 1 }}>{entry.title}</Text>
                   <Text style={text(12, "muted")}>{[entry.worker || entry.parent ? "Worker" : entry.kind === "chat" ? "Chat" : "Shell", entry.status].join(" · ")}</Text>
                 </View>
                 {pad ? <TabDot ui={ui} status={entry.status} /> : <StatusDot status={entry.status} />}

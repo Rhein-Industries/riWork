@@ -1,4 +1,4 @@
-import { Text, View, cleanup, host, mount, signal, type YNode } from "nsh";
+import { Text, View, cleanup, host, mount, signal, type ViewRef } from "nsh";
 import { Layouts, type LayoutSession } from "riwork/native";
 import { Workspace } from "../Workspace";
 import { requirePrivateHome } from "./private-home";
@@ -22,7 +22,7 @@ function Fixture() {
   const error = signal("");
   let alive = true;
   let latest: unknown;
-  const nodes = new Map<string, YNode>();
+  const nodes = new Map<string, ViewRef>();
   let manifest: unknown;
   let fixture: unknown;
   cleanup(() => { alive = false; session()?.dispose(); });

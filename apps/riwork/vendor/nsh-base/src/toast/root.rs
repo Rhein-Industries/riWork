@@ -5,34 +5,19 @@ use std::{rc::Rc, time::Duration};
 use nsh_core::{TouchEvent, TouchPhase, prelude::*};
 
 use super::ToastTransitionStatus;
+use crate::popup::important;
 
 /// How far a pointer moves toward the swipe before the toast follows it
 /// (its buttons' presses stay presses below that).
 const SWIPE_SLOP: f32 = 10.0;
-/// A release this fast toward the swipe (points per millisecond) dismisses
-/// it short of the threshold: a flick.
-const FLICK: f32 = 0.5;
+/// A release this fast toward the swipe (points per second) dismisses it
+/// short of the threshold: a flick.
+const FLICK: f32 = 500.0;
 /// How long a toast takes to follow a release (away, or back).
 const SETTLE_MS: f32 = 200.0;
 /// How long a toast waits for its first display frame before it counts as
 /// past it without one (a surface not on screen).
 const FIRST_FRAME_MS: u64 = 50;
-
-/// `class` with every utility important (`opacity-0` is `opacity-0!`).
-fn important(class: &str) -> SharedString {
-    class
-        .split_whitespace()
-        .map(|t| {
-            if t.ends_with('!') || t.split(':').next_back().is_some_and(|u| u.starts_with('!')) {
-                t.to_owned()
-            } else {
-                format!("{t}!")
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
-        .into()
-}
 
 /// The direction a toast is swiped away in.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PropEnum)]
@@ -96,7 +81,8 @@ pub enum ToastEvent {
 /// `swipeThreshold` or a flick asks to dismiss it (`onDismissRequest`);
 /// short of it, it goes back. The screen reader reads its
 /// `accessibilityLabel` as it shows. Placed in a `ToastStack`, which lays
-/// toasts out.
+/// toasts out. In a terminal it shows and goes in one frame: its state
+/// classes do not apply.
 #[component]
 pub fn Toast(props: ToastProps, cx: Scope<ToastEvent>) -> impl IntoElement {
     let status = props.transition_status;
@@ -177,7 +163,12 @@ pub fn Toast(props: ToastProps, cx: Scope<ToastEvent>) -> impl IntoElement {
     // The state's classes win over the app's `class` and `style`, as a
     // state's styles do (`activeStyle`) and as CSS's state selectors do by
     // their specificity: applied as `!` utilities.
+    // A terminal's toast comes and goes in one frame: no state's motion.
+    let terminal = crate::terminal::is_terminal();
     let class = move || {
+        if terminal {
+            return None;
+        }
         let state = if status.get() == ToastTransitionStatus::Ending {
             props.ending_class.get()
         } else if swiping.get() {
@@ -232,15 +223,4 @@ pub fn Toast(props: ToastProps, cx: Scope<ToastEvent>) -> impl IntoElement {
             back();
         })
         .child(props.children)
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn state_classes_are_important() {
-        assert_eq!(
-            &*super::important("opacity-0 dark:bg-black/50 !p-2 m-1!"),
-            "opacity-0! dark:bg-black/50! !p-2 m-1!"
-        );
-    }
 }

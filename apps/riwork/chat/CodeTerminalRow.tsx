@@ -1,5 +1,6 @@
-import { Text, View, cleanup, signal, type YNode } from "nsh";
+import { Text, View, cleanup, signal, type ViewRef } from "nsh";
 import { space, type InterfaceTheme } from "../appearance";
+import { focusView } from "../keyboard";
 import { escapeWithin, focusWithin } from "./SidePanel";
 
 /** A snippet stays inert: choosing a currently open local terminal only copies
@@ -40,12 +41,12 @@ export function CodeTerminalRow(props: {
     } finally { if (alive) busy.set(false); }
   }
   // Busy is read in place, so a copy keeps the buttons (and the focus).
-  const button = (label: string, accessibilityLabel: string, onPress: () => void, tooltip?: string, ref?: (node: YNode) => void) =>
+  const button = (label: string, accessibilityLabel: string, onPress: () => void, tooltip?: string, ref?: (node: ViewRef) => void) =>
     <View role="button" ref={(node) => ref?.(node)} focusable={!busy()} tooltip={tooltip} accessibilityLabel={accessibilityLabel} accessibilityState={{ disabled: busy() }}
       onPress={() => { if (!busy()) onPress(); }} {...focus.track(accessibilityLabel)}
       style={{ maxWidth: "100%", paddingHorizontal: size(8), paddingVertical: size(4), borderRadius: 5, borderWidth: 1, borderColor: palette().divider, opacity: busy() ? 0.5 : 1 }}
       hoverStyle={{ backgroundColor: palette().panelActive }} focusStyle={{ borderColor: palette().cyan }}>
-      <Text numberOfLines={1} style={text()}>{label}</Text>
+      <Text style={{ ...text(), numberOfLines: 1 }}>{label}</Text>
     </View>;
   return <View testID="chat-copy-to-terminal" style={{ marginTop: size(6), gap: size(5) }}>
     <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: size(6) }}>
@@ -53,7 +54,7 @@ export function CodeTerminalRow(props: {
       {!props.targets().length && <Text style={text(11, palette().muted)}>No local terminals are open in this project window.</Text>}
       {props.targets().map((target) => button(target.label, `Copy snippet and open ${target.label}`, () => void choose(target.id),
         "Copies the snippet and opens this terminal. Paste it there when ready."))}
-      {button("Cancel", "Cancel", close, undefined, (node) => { if (props.focus) node.focus(); })}
+      {button("Cancel", "Cancel", close, undefined, (node) => { if (props.focus) focusView(node); })}
     </View>
     {!!error() && <Text role="text" style={{ ...text(11), color: palette().gold }}>{error()}</Text>}
   </View>;

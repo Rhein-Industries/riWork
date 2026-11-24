@@ -11,7 +11,7 @@ import tempfile
 
 IOS = Path(__file__).resolve().parent.parent
 ROOT = IOS.parent
-VERSION = "0.3.0"
+VERSION = "0.6.0"
 remembered = IOS / ".nsh-cli"
 candidate = os.environ.get("NSH_CLI")
 if not candidate and remembered.exists():
@@ -19,21 +19,29 @@ if not candidate and remembered.exists():
 if not candidate:
     candidate = shutil.which("nsh")
 if not candidate:
-    raise SystemExit("Set NSH_CLI to the absolute path of the NSH 0.3.0 executable, then run ios/scripts/prepare-nsh.py.")
+    raise SystemExit(f"Set NSH_CLI to the absolute path of the NSH {VERSION} executable, then run ios/scripts/prepare-nsh.py.")
 cli = Path(candidate).expanduser().resolve()
 if not cli.is_file() or not os.access(cli, os.X_OK):
     raise SystemExit(f"NSH_CLI is not executable: {cli}")
 version = subprocess.check_output([str(cli), "--version"], text=True).strip()
 if not re.match(r"^nsh " + re.escape(VERSION) + r"(?:\s|$)", version):
     raise SystemExit(f"Somtus iOS requires NSH {VERSION}; selected {version}. Set NSH_CLI to the matching release.")
-sdk = Path(os.environ.get("NSH_IOS_SDK", str(cli.parent.parent / "embed/ios/NativeShell.xcframework"))).expanduser().resolve()
+# Since NSH 0.5 the CLI archive has no `embed` folder: the iOS embedding SDK is the release's own asset,
+# nsh-embed-ios.zip. Unpacked beside the CLI's `bin` it is found here; anywhere else, NSH_IOS_SDK names it.
+beside_cli = cli.parent.parent / "embed/ios/NativeShell.xcframework"
+sdk = Path(os.environ.get("NSH_IOS_SDK") or beside_cli).expanduser().resolve()
+obtain = (f"Download nsh-embed-ios.zip and nsh-embed-ios.zip.sha256 from "
+          f"https://github.com/longbridge/nsh/releases/tag/v{VERSION}, check the archive against the checksum, and put its "
+          f"NativeShell.xcframework at {beside_cli}, or set NSH_IOS_SDK to where it is.")
+if not sdk.is_dir():
+    raise SystemExit(f"The NSH {VERSION} iOS SDK is not at {sdk}. {obtain}")
 for platform in ("ios-arm64", "ios-arm64-simulator"):
     if not (sdk / platform / "NativeShell.framework/NativeShell").is_file():
-        raise SystemExit(f"The NSH {VERSION} iOS SDK is missing {platform}: {sdk}. Set NSH_IOS_SDK to its NativeShell.xcframework.")
+        raise SystemExit(f"The NSH {VERSION} iOS SDK is missing {platform}: {sdk}. {obtain}")
     with (sdk / platform / "NativeShell.framework/Info.plist").open("rb") as file:
         sdk_version = plistlib.load(file).get("CFBundleShortVersionString")
     if sdk_version != VERSION:
-        raise SystemExit(f"Somtus iOS requires the NSH {VERSION} runtime; {platform} contains {sdk_version}.")
+        raise SystemExit(f"Somtus iOS requires the NSH {VERSION} runtime; {platform} of {sdk} contains {sdk_version}. {obtain}")
 
 generated = IOS / "Generated"
 generated.mkdir(exist_ok=True)

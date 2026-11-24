@@ -182,7 +182,7 @@ export function UsagePanel(props: {
       props.value.sessionCostUsd != null ? `Estimated session cost ${money(props.value.sessionCostUsd)}` : "",
     ].filter(Boolean).join(" · ");
     return <>
-      {props.value.accountLabel && <Text selectable={true} style={text(11, palette().muted)}>{props.value.accountLabel}</Text>}
+      {props.value.accountLabel && <Text style={{ ...text(11, palette().muted), userSelect: "text" }}>{props.value.accountLabel}</Text>}
       {quotaWindows(props.value).map((window) => <WindowGauge window={window} />)}
       {readout().windows?.length === 0 && <Text style={{ ...text(11, palette().muted), paddingTop: 8 }}>Quota windows unavailable</Text>}
       {readout().note && <Text style={{ ...text(10, palette().muted), paddingTop: 6 }}>{readout().note}</Text>}

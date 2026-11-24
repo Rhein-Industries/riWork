@@ -4,11 +4,14 @@
 //! as the math syntax `markdown-rs` reads: `$$…$$` in text (a pair of
 //! dollars, which the prose check of single dollars leaves alone) and a
 //! `$$` fence for a display formula on lines of its own. Code (fences and
-//! spans) is left as written.
+//! spans) is left as written. Escaped brackets that are no formula stay
+//! text ([`is_formula`]): reference numbers (`\[1\]\[3\]`, `\[2, 5\]`)
+//! and CJK words (`\[注\]`).
 
 use std::borrow::Cow;
 
 use super::{
+    cjk::is_cjk,
     container::{fence_closes, fence_opens, strip_containers},
     streaming::{spans, tex_end},
 };
@@ -18,6 +21,19 @@ pub(super) fn rewrite(source: &str) -> Cow<'_, str> {
     if !source.contains("\\(") && !source.contains("\\[") {
         return Cow::Borrowed(source);
     }
+    Cow::Owned(rewrite_lines(source, &mut |_, _| {}))
+}
+
+/// [`rewrite`] of `source`, which also tells where its lines after a blank
+/// line outside fenced code start: `blank(at, written)`, `at` the offset in
+/// `source` and `written` the one in what is returned. The scan is there in
+/// the state it starts in, so what follows such a line is rewritten the
+/// same with or without the text before it.
+pub(super) fn rewrite_blanks(source: &str, blank: &mut dyn FnMut(usize, usize)) -> String {
+    rewrite_lines(source, blank)
+}
+
+fn rewrite_lines(source: &str, blank: &mut dyn FnMut(usize, usize)) -> String {
     let lines = lines(source);
     let mut out = String::with_capacity(source.len() + 16);
     // The lines of text (not code, not blank) not written out yet: a
@@ -55,12 +71,17 @@ pub(super) fn rewrite(source: &str) -> Cow<'_, str> {
             continue;
         }
         out.push_str(&source[start..next]);
+        // A blank line that ended: no fence is open (a fence's opening line
+        // is no blank line) and no text waits to be written.
+        if fence.is_none() && end < source.len() {
+            blank(next, out.len());
+        }
         i += 1;
     }
     if let Some(from) = text {
         inline(&source[from..], &mut out);
     }
-    Cow::Owned(out)
+    out
 }
 
 /// The lines of `source`: start, end without the line ending, start of the
@@ -88,6 +109,12 @@ fn display_end(source: &str, lines: &[(usize, usize, usize)], first: usize) -> O
             content = &content[2..];
             // `\[x\] and more`: a formula in text.
             if content.contains("\\]") && !content.ends_with("\\]") {
+                return None;
+            }
+            // `\[1\]\[3\]`, `\[2\]`: text, read as such by `inline`.
+            if let Some(body) = content.strip_suffix("\\]")
+                && (body.contains("\\]") || !is_formula(body))
+            {
                 return None;
             }
         } else if content.is_empty() {
@@ -164,9 +191,14 @@ fn inline(text: &str, out: &mut String) {
     let bytes = text.as_bytes();
     let mut copied = 0;
     let mut i = 0;
+    let mut span_index = 0;
     while i < bytes.len() {
-        if let Some(&(_, e)) = code.iter().find(|&&(s, _)| s == i) {
-            i = e;
+        while code.get(span_index).is_some_and(|&(start, _)| start < i) {
+            span_index += 1;
+        }
+        if let Some(&(_, end)) = code.get(span_index).filter(|&&(start, _)| start == i) {
+            i = end;
+            span_index += 1;
             continue;
         }
         if open_code.is_some_and(|(s, _)| i >= s) {
@@ -178,9 +210,16 @@ fn inline(text: &str, out: &mut String) {
         }
         if let Some(end) = tex_end(text, i) {
             let body = &text[i + 2..end - 2];
+            // Brackets in a row (`\[1\]\[3\]`) or holding no formula are
+            // escaped brackets.
+            let brackets = bytes[i + 1] == b'['
+                && (text[end..].starts_with("\\[")
+                    || text[..i].ends_with("\\]")
+                    || !is_formula(body));
             // Dollars inside would end the formula early; a blank line
             // ends the paragraph.
-            if !body.trim().is_empty() && !body.contains('$') && !body.contains("\n\n") {
+            if !brackets && !body.trim().is_empty() && !body.contains('$') && !body.contains("\n\n")
+            {
                 out.push_str(&text[copied..i]);
                 out.push_str("$$");
                 out.push_str(body);
@@ -194,6 +233,26 @@ fn inline(text: &str, out: &mut String) {
         i += 2;
     }
     out.push_str(&text[copied..]);
+}
+
+/// Whether `body`, between `\[` and `\]`, is a formula, not a reference
+/// number (`1`, `2, 5`, `3-4`, `^1`) or CJK words with nothing of TeX's
+/// (`注`, `来源`).
+fn is_formula(body: &str) -> bool {
+    let body = body.trim();
+    let number = body.strip_prefix('^').unwrap_or(body);
+    if !number.is_empty()
+        && number.chars().all(|c| {
+            c.is_ascii_digit()
+                || c.is_whitespace()
+                || matches!(c, ',' | '，' | '、' | '-' | '–' | '~')
+        })
+        && number.chars().any(|c| c.is_ascii_digit())
+    {
+        return false;
+    }
+    let tex = body.contains(['\\', '^', '_', '{', '}', '=']);
+    tex || !body.chars().any(is_cjk)
 }
 
 #[cfg(test)]
@@ -218,6 +277,18 @@ mod tests {
     }
 
     #[test]
+    fn code_after_formulas_is_preserved() {
+        check(
+            r"\(a `one` + `two`\) `\(code\)` and \(x\)",
+            r"$$a `one` + `two`$$ `\(code\)` and $$x$$",
+        );
+        check(
+            r"\[a `one` = `two`\] ``\[code ` literal\]`` and \(x\)",
+            r"$$a `one` = `two`$$ ``\[code ` literal\]`` and $$x$$",
+        );
+    }
+
+    #[test]
     fn display_formulas() {
         check(
             "Text\n\n\\[\nx = 1\n\\]\n\nAfter",
@@ -230,5 +301,31 @@ mod tests {
         check("```\n\\[\nx\n\\]\n```", "```\n\\[\nx\n\\]\n```");
         // Not closed: text.
         check("\\[\nx\n\nmore", "\\[\nx\n\nmore");
+    }
+
+    #[test]
+    fn escaped_brackets_that_are_no_formula() {
+        // Reference numbers, in a row or alone, on a line of their own or in
+        // text.
+        check("\\[1\\]\\[3\\]", "\\[1\\]\\[3\\]");
+        check("见文献\\[1\\]\\[3\\]。", "见文献\\[1\\]\\[3\\]。");
+        check(
+            "as shown \\[2, 5\\] and \\[^1\\]",
+            "as shown \\[2, 5\\] and \\[^1\\]",
+        );
+        check("\\[12\\]", "\\[12\\]");
+        check("\\[a\\]\\[b\\]", "\\[a\\]\\[b\\]");
+        check("\\[x_1\\]\\[3\\]", "\\[x_1\\]\\[3\\]");
+        // CJK words with nothing of TeX's.
+        check("\\[注\\] 正文", "\\[注\\] 正文");
+        // Formulas still: TeX in them, Latin variables, CJK in `\text`.
+        check("\\[ x + 1 \\]", "$$\nx + 1\n$$");
+        check(
+            "面积 \\[\\text{面积} = a^2\\] 如上",
+            "面积 $$\\text{面积} = a^2$$ 如上",
+        );
+        check("\\[2^{10}\\]", "$$\n2^{10}\n$$");
+        // `\(…\)` is unchanged: a number is a formula there.
+        check("答案是 \\(2\\)", "答案是 $$2$$");
     }
 }

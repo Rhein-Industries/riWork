@@ -286,7 +286,7 @@ export function DictationControl(props: DictationProps) {
     : state().phase === "finishing" ? "Finishing what was heard…"
     : state().phase === "listening" ? holding() ? "Release to send" : "Stop dictating and keep words · ⌃⌥D or ⎋ · ⏎ sends"
     : state().phase === "failed" ? "Dictate again · ⌃⌥D" : `Dictate · ⌃⌥D${holdHint()}`;
-  return <View style={{ display: props.enabled ? "flex" : "none" }}>
+  return <View style={{ display: props.enabled ? "flex" : "none", flexDirection: "column" }}>
     <Button testID="chat-dictate" tooltip={<Text style={{ fontFamily: props.theme().family, fontSize: 11 * props.theme().scale, color: props.theme().palette.text }}>{label()}</Text>}
       accessibilityLabel={label()} disabled={!!props.disabled} selected={isActive(state())}
       // A press held past the hold delay is push-to-talk and its release sends; a click toggles.
@@ -297,7 +297,7 @@ export function DictationControl(props: DictationProps) {
         alignItems: "center", justifyContent: "center", opacity: props.disabled ? 0.4 : 1,
         backgroundColor: isActive(state()) ? props.theme().palette.panelActive : "transparent" }}
       hoverStyle={{ backgroundColor: props.theme().palette.panelActive }}>
-      <Canvas pointerEvents="none" style={{ width: 15 * props.theme().scale, height: 15 * props.theme().scale }} draw={(cx, size) => {
+      <Canvas style={{ width: 15 * props.theme().scale, height: 15 * props.theme().scale, pointerEvents: "none" }} draw={(cx, size) => {
         cx.scale(size.width / 24, size.height / 24);
         cx.strokeStyle = isActive(state()) ? props.theme().palette.working : props.theme().palette.muted;
         cx.fillStyle = cx.strokeStyle;
@@ -328,7 +328,7 @@ export function DictationStatus(props: { theme: () => InterfaceTheme; controller
     <Text style={text(props.theme().palette.muted)}>{label}</Text>
   </View>;
   return <View style={{ display: shown() ? "flex" : "none", flexDirection: "row", alignItems: "center", gap: 5, paddingVertical: 3 }}>
-    <Text numberOfLines={3} style={{ ...text(failed() ? props.theme().palette.gold : props.theme().palette.working), flex: 1 }}>{message()}</Text>
+    <Text style={{ ...text(failed() ? props.theme().palette.gold : props.theme().palette.working), flex: 1, numberOfLines: 3 }}>{message()}</Text>
     {failed() && state()?.settingsUrl && button("Open System Settings", () => {
       void openUrl(state()!.settingsUrl!).then(() => props.controller()?.dismiss());
     })}
